@@ -1,0 +1,929 @@
+/**
+ * IndexedDB Wrapper para FlotaControl
+ *
+ * Modelo de datos:
+ *   MAESTRO (`equipos`)          -> el padrón editable. Fusiona la planilla de Equipos y la de
+ *                                   Consumos Estimados en una sola fila por equipo, identificada
+ *                                   por INTERNO + DOMINIO (el común denominador de todo el sistema).
+ *                                   Admite columnas propias definidas por el usuario.
+ *   MOVIMIENTOS (`raw_records`)  -> todo lo que pasa en el tiempo: cargas de combustible,
+ *                                   resúmenes de GPS, cubiertas, insumos, filtros y cualquier
+ *                                   planilla futura. Cada registro guarda además TODAS sus columnas
+ *                                   originales en `datos`, para no perder información al importar.
+ *   `correccionesCargas`         -> correcciones persistentes de cargas sin asignar. Keyed por
+ *                                   "huella" (fecha|litros|importe|interno_original). Se re-aplican
+ *                                   automáticamente cada vez que se reimporta el mismo archivo.
+ *   `disponibilidad`             -> estado diario de cada equipo (Operativo, Taller, Transferido…).
+ *                                   Keyed por "interno|fecha". Se usa para cruzar con cargas sin
+ *                                   asignar y reducir la lista de candidatos.
+ *   `mapeos`                     -> cómo se traduce cada columna de un tipo de planilla a los
+ *                                   campos del sistema.
+ *   `config`                     -> definición de las columnas propias del maestro y otros ajustes.
+ */
+import { normalizeEquipoKey, claveCargaExacta, claveGpsExacta } from './normalizer.js';
+
+const DB_NAME = 'FlotaControlDB';
+// v7: estados persistentes de "consumo fuera de la flota" (vehículos con patente sin interno,
+// planta, otros) marcados como válidos así — para que dejen de aparecer en el diagnóstico sin
+// necesidad de darlos de alta en el maestro (ej. vehículos de un programa de préstamo/demo).
+// v8: equipos apartados del análisis a mano (ej. una unidad que pasó a San Juan y por eso deja
+// de aparecer en el Resumen de Flota de estos archivos): siguen en el maestro y en las tablas,
+// pero no generan hallazgos ni ensucian los promedios.
+// v9: registro de prefijos "fuera de flota" oficializados (ej. CA = CALDERA, LM = LIMPIEZA):
+// códigos que no son equipos con km/horas pero sí gasto real, dados de alta a propósito desde
+// el hallazgo "códigos nuevos de Mendoza" para que dejen de figurar como consumo sin identificar.
+// v12: acciones que el diagnóstico aplicó solo (dar de alta un interno nuevo, aceptar un código
+// que no se puede resolver más, alinear una meta vacía al consumo real la primera vez) — ver
+// js/data/autocorreccion.js. No pide permiso antes de aplicar, pero queda registrado para que
+// se pueda revisar y deshacer.
+// v13 — correcciones del período: ralentiEstados y noFlotaAceptados llevan {periodo:{desde,hasta}}
+// opcional, para que en futuros períodos el sistema sepa si una aceptación sigue vigente o hay
+// que revisarla. Sin migración: registros sin periodo siguen aplicando siempre (backward compat).
+// v14: referentes de meta elegidos a mano (`referentesMeta`). La mediana de pares la arma una
+// regla (marca+modelo, si no denominación), pero quien opera sabe cuál par es realmente
+// comparable y la app no: dos equipos del mismo modelo pueden trabajar en frentes distintos y
+// uno arrastra la mediana a un valor que no aplica. Guarda {interno, excluidos[], incluidos[]}
+// para poder sacar un par que la regla eligió, o sumar uno que la regla no vio.
+const DB_VERSION = 14;
+
+let dbInstance = null;
+
+export function initDB() {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
+
+        request.onerror = (e) => { console.error('Database error:', e.target.error); reject(e.target.error); };
+        request.onsuccess = (e) => { dbInstance = e.target.result; resolve(dbInstance); };
+
+        request.onupgradeneeded = (event) => {
+            const db = event.target.result;
+
+            if (!db.objectStoreNames.contains('equipos')) {
+                const s = db.createObjectStore('equipos', { keyPath: 'interno' });
+                s.createIndex('dominio', 'dominio', { unique: false });
+            }
+            if (!db.objectStoreNames.contains('raw_records')) {
+                const s = db.createObjectStore('raw_records', { keyPath: 'id', autoIncrement: true });
+                s.createIndex('interno', 'interno', { unique: false });
+                s.createIndex('fecha', 'fecha', { unique: false });
+                s.createIndex('source_file', 'source_file', { unique: false });
+                s.createIndex('type', 'type', { unique: false });
+            }
+            if (!db.objectStoreNames.contains('files_meta')) {
+                db.createObjectStore('files_meta', { keyPath: 'filename' });
+            }
+            // Se mantiene por compatibilidad con bases v2/v3; el maestro ya integra las metas.
+            if (!db.objectStoreNames.contains('estimados')) {
+                db.createObjectStore('estimados', { keyPath: 'interno' });
+            }
+            if (!db.objectStoreNames.contains('precios')) {
+                db.createObjectStore('precios', { keyPath: 'combustible' });
+            }
+            if (!db.objectStoreNames.contains('mapeos')) {
+                db.createObjectStore('mapeos', { keyPath: 'tipo' });
+            }
+            if (!db.objectStoreNames.contains('config')) {
+                db.createObjectStore('config', { keyPath: 'k' });
+            }
+            // v5 — correcciones de cargas y disponibilidad diaria
+            if (!db.objectStoreNames.contains('correccionesCargas')) {
+                const s = db.createObjectStore('correccionesCargas', { keyPath: 'huella' });
+                s.createIndex('interno_original', 'interno_original', { unique: false });
+            }
+            if (!db.objectStoreNames.contains('disponibilidad')) {
+                const s = db.createObjectStore('disponibilidad', { keyPath: 'id' }); // id = 'interno|fecha'
+                s.createIndex('interno', 'interno', { unique: false });
+                s.createIndex('fecha', 'fecha', { unique: false });
+            }
+            // v6 — auditoría de ediciones manuales, ralentí (aceptable/seguimiento) y reclamos GPS
+            if (!db.objectStoreNames.contains('edicionesLog')) {
+                const s = db.createObjectStore('edicionesLog', { keyPath: 'id', autoIncrement: true });
+                s.createIndex('tabla', 'tabla', { unique: false });
+                s.createIndex('fecha', 'fecha', { unique: false });
+            }
+            if (!db.objectStoreNames.contains('ralentiEstados')) {
+                db.createObjectStore('ralentiEstados', { keyPath: 'interno' });
+            }
+            if (!db.objectStoreNames.contains('reclamosGPS')) {
+                const s = db.createObjectStore('reclamosGPS', { keyPath: 'id', autoIncrement: true });
+                s.createIndex('interno', 'interno', { unique: false });
+                s.createIndex('estado', 'estado', { unique: false });
+            }
+            // v7 — "consumo fuera de la flota" (código/dominio, no interno de padrón) aceptado
+            if (!db.objectStoreNames.contains('noFlotaAceptados')) {
+                db.createObjectStore('noFlotaAceptados', { keyPath: 'codigo' });
+            }
+            // v8 — equipos apartados del análisis a mano
+            if (!db.objectStoreNames.contains('equiposExcluidos')) {
+                db.createObjectStore('equiposExcluidos', { keyPath: 'interno' });
+            }
+            // v9 — prefijos "fuera de flota" oficializados (CA, LM, y los que se vayan sumando)
+            if (!db.objectStoreNames.contains('prefijosNoFlota')) {
+                db.createObjectStore('prefijosNoFlota', { keyPath: 'prefijo' });
+            }
+            // v10 — equipos con pocas cargas marcados "en seguimiento": no se excluyen del
+            // análisis (a diferencia de equiposExcluidos), solo quedan anotados con un motivo
+            // para no repreguntar por ellos cada vez que aparecen con poca base de datos.
+            if (!db.objectStoreNames.contains('seguimientoEquipos')) {
+                db.createObjectStore('seguimientoEquipos', { keyPath: 'interno' });
+            }
+            // v11 — actividad (km u horas) declarada a mano para equipos que no reportan GPS,
+            // por equipo y por período, con rango y temporada. Ver consumoDesdeActividadDeclarada().
+            if (!db.objectStoreNames.contains('actividadEstimada')) {
+                const s = db.createObjectStore('actividadEstimada', { keyPath: 'id' });
+                s.createIndex('interno', 'interno', { unique: false });
+            }
+            // v12 — ver comentario junto a DB_VERSION.
+            if (!db.objectStoreNames.contains('accionesAutomaticas')) {
+                const s = db.createObjectStore('accionesAutomaticas', { keyPath: 'id', autoIncrement: true });
+                s.createIndex('codigo', 'codigo', { unique: false });
+                s.createIndex('revisado', 'revisado', { unique: false });
+            }
+            // v14 — ver comentario junto a DB_VERSION.
+            if (!db.objectStoreNames.contains('referentesMeta')) {
+                db.createObjectStore('referentesMeta', { keyPath: 'interno' });
+            }
+        };
+    });
+}
+
+/**
+ * Huella estable para una carga de combustible.
+ * Se calcula a partir de campos que no varían entre reimportaciones del mismo archivo.
+ * Si el mismo registro (misma fecha, litros, importe, interno_original) se vuelve a importar,
+ * la corrección guardada se re-aplica automáticamente.
+ */
+/**
+ * Identifica una carga de forma estable para guardar/reaplicar correcciones, SIN depender
+ * del interno que se le termine asignando (si dependiera de `interno`, la huella cambiaría
+ * apenas se corrige la carga, y la corrección guardada quedaría con una clave vieja que ya
+ * no matchea contra la fila corregida — la fila perdía el badge "Corregido" y el botón para
+ * volver a editarla, aunque la corrección siguiera guardada en la base). Por eso usa
+ * `_interno_original` (el valor tal cual venía del Excel, preservado por `asignarA()`) si
+ * existe, y solo cae a `interno` para una fila que todavía nunca se corrigió.
+ */
+export function huellaCarga(r) {
+    return [
+        r.fecha || '',
+        String(r.litros || ''),
+        String(r.importe || ''),
+        String((r._interno_original ?? r.interno) || '').toUpperCase().trim()
+    ].join('|');
+}
+
+export function getDB() {
+    if (!dbInstance) throw new Error('Database not initialized. Call initDB() first.');
+    return dbInstance;
+}
+
+function writeTx(storeNames, fn) {
+    return new Promise((resolve, reject) => {
+        const tx = getDB().transaction(storeNames, 'readwrite');
+        let result;
+        try { result = fn(storeNames.map(n => tx.objectStore(n)), tx); }
+        catch (e) { reject(e); return; }
+        tx.oncomplete = () => resolve(result);
+        tx.onerror = (e) => reject(e.target.error);
+        tx.onabort = (e) => reject(e.target.error);
+    });
+}
+
+function readAll(storeName) {
+    return new Promise((resolve, reject) => {
+        const tx = getDB().transaction([storeName], 'readonly');
+        const req = tx.objectStore(storeName).getAll();
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = (e) => reject(e.target.error);
+    });
+}
+
+function readOne(storeName, key) {
+    return new Promise((resolve, reject) => {
+        const tx = getDB().transaction([storeName], 'readonly');
+        const req = tx.objectStore(storeName).get(key);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = (e) => reject(e.target.error);
+    });
+}
+
+// ============================ MAESTRO ============================
+
+export function getAllEquipos() { return readAll('equipos'); }
+
+/**
+ * Inserta o fusiona filas en el maestro.
+ *
+ * La fusión es la parte importante: la planilla de Equipos y la de Consumos Estimados
+ * escriben sobre la MISMA fila, y el orden en que se suban no debe importar. Además, al
+ * reimportar una planilla no se pueden perder ni las columnas propias que agregó el usuario
+ * ni las correcciones que hizo a mano.
+ *
+ * @param {Array} filas    Filas a escribir (deben traer al menos `interno`)
+ * @param {Object} opts    { preservarEdiciones: true }
+ */
+export function upsertEquipos(filas, opts = {}) {
+    const preservar = opts.preservarEdiciones !== false;
+    return new Promise((resolve, reject) => {
+        const tx = getDB().transaction(['equipos'], 'readwrite');
+        const store = tx.objectStore('equipos');
+        let escritas = 0;
+
+        filas.forEach(nueva => {
+            const req = store.get(nueva.interno);
+            req.onsuccess = () => {
+                const previa = req.result;
+                if (!previa) {
+                    store.put({ extra: {}, origen: [], ...nueva });
+                } else {
+                    const fusionada = { ...previa };
+                    // Solo se pisan los campos que la nueva fila realmente trae con valor.
+                    Object.entries(nueva).forEach(([k, v]) => {
+                        if (k === 'extra' || k === 'origen') return;
+                        if (v === null || v === undefined || v === '') return;
+                        // Un valor corregido a mano no lo pisa una reimportación.
+                        if (preservar && previa.editado_manual && previa.editado_manual.includes(k)) return;
+                        fusionada[k] = v;
+                    });
+                    fusionada.extra = { ...(previa.extra || {}), ...(nueva.extra || {}) };
+                    fusionada.origen = [...new Set([...(previa.origen || []), ...(nueva.origen || [])])];
+                    store.put(fusionada);
+                }
+                escritas++;
+            };
+        });
+
+        tx.oncomplete = () => resolve(escritas);
+        tx.onerror = (e) => reject(e.target.error);
+    });
+}
+
+/** Alias histórico: el parser de Equipos sigue llamando a insertEquipos. */
+export const insertEquipos = (filas) => upsertEquipos(filas);
+
+/** Guarda un equipo completo (edición manual desde la grilla o la tarjeta). */
+export function updateEquipo(equipo) {
+    return writeTx(['equipos'], ([store]) => { store.put(equipo); return equipo; });
+}
+
+export function deleteEquipo(interno) {
+    return writeTx(['equipos'], ([store]) => { store.delete(interno); });
+}
+
+/**
+ * Marca un campo como corregido a mano para que una reimportación no lo pise.
+ */
+export async function editarCampoEquipo(interno, campo, valor, esExtra = false) {
+    const eq = await readOne('equipos', interno);
+    if (!eq) throw new Error(`No existe el equipo ${interno}`);
+
+    if (esExtra) {
+        eq.extra = { ...(eq.extra || {}), [campo]: valor };
+    } else {
+        eq[campo] = valor;
+        eq.editado_manual = [...new Set([...(eq.editado_manual || []), campo])];
+    }
+    return updateEquipo(eq);
+}
+
+// ============================ COLUMNAS PROPIAS ============================
+
+const COLS_KEY = 'columnas_extra';
+
+/** Columnas propias del maestro: [{id, label}] */
+export async function getColumnasExtra() {
+    const r = await readOne('config', COLS_KEY);
+    return (r && r.v) || [];
+}
+
+export function setColumnasExtra(cols) {
+    return writeTx(['config'], ([store]) => { store.put({ k: COLS_KEY, v: cols }); return cols; });
+}
+
+// ============================ MAPEOS DE COLUMNAS ============================
+
+/**
+ * Mapeo guardado para un tipo de planilla: { tipo, columnas: {campoSistema: 'NOMBRE EN EXCEL'} }
+ * Permite que si HSV renombra una columna, se corrija una vez y quede aprendido.
+ */
+export function getMapeo(tipo) { return readOne('mapeos', tipo); }
+export function getAllMapeos() { return readAll('mapeos'); }
+export function saveMapeo(tipo, columnas) {
+    return writeTx(['mapeos'], ([store]) => { store.put({ tipo, columnas, actualizado: new Date().toISOString() }); });
+}
+
+// ============================ MOVIMIENTOS ============================
+
+/**
+ * Inserta registros en raw_records aplicando las correcciones persistentes guardadas.
+ *
+ * Para cada carga (type === 'carga') calcula su huella y busca si el usuario ya la
+ * corrigió antes: si la marcó para eliminar, la saltea; si la asignó a otro equipo,
+ * reemplaza interno/dominio antes de insertarla. El resto de los registros (GPS,
+ * cubiertas, etc.) se insertan sin cambios.
+ */
+export async function insertRawRecords(arr) {
+    const correcciones = await getCorreccionesCargas();
+    const mapa = new Map(correcciones.map(c => [c.huella, c]));
+
+    // Duplicados EXACTOS: se marcan al importar en vez de dejarlos entrar y avisar después.
+    // Cubre los dos casos que inflan los totales sin que se note:
+    //   - la misma fila repetida dentro del mismo archivo;
+    //   - volver a subir un archivo ya procesado sin limpiar los movimientos (que es
+    //     justamente lo que hay que poder hacer para ir SUMANDO los meses nuevos).
+    // No se borran: se guardan marcadas, siguen visibles en Base de Datos, y el análisis las
+    // saltea (ver registroExcluido() en analyzer.js). Así el dato original no se pierde y la
+    // decisión es reversible.
+    const claveExacta = (r) => r.type === 'carga' ? 'C:' + claveCargaExacta(r)
+        : r.type === 'gps' ? 'G:' + claveGpsExacta(r)
+        : null;
+
+    const yaExistentes = new Set();
+    try {
+        (await getAllRawRecords()).forEach(r => {
+            if (r._dupe_exacta) return;
+            const k = claveExacta(r);
+            if (k) yaExistentes.add(k);
+        });
+    } catch (e) {
+        console.warn('No se pudieron leer los movimientos previos para detectar duplicados:', e);
+    }
+    // Cuántas veces vimos ya cada huella en ESTA importación. Lo necesita 'dedupe': un duplicado
+    // exacto produce, por definición, la misma huella en las dos filas, así que no se puede
+    // resolver con 'eliminar' (saltearía las dos y se perdería también la carga buena). 'dedupe'
+    // conserva las primeras N apariciones y descarta el resto.
+    const vistasPorHuella = new Map();
+
+    const finales = [];
+    for (const r of arr) {
+        if (r.type !== 'carga') { finales.push(r); continue; }
+        const h = huellaCarga(r);
+        const corr = mapa.get(h);
+        const nVista = (vistasPorHuella.get(h) || 0) + 1;
+        vistasPorHuella.set(h, nVista);
+        if (!corr) { finales.push(r); continue; }
+        if (corr.accion === 'eliminar') continue;               // descartado por el usuario
+        if (corr.accion === 'dedupe') {
+            // Se conservan las primeras `conservar` (1 por defecto) y se descartan las copias.
+            if (nVista > (corr.conservar || 1)) continue;
+            finales.push(r);
+            continue;
+        }
+
+        // Correcciones que NO reasignan el equipo pero igual hay que volver a aplicar cuando se
+        // reimporta el archivo: si no, el usuario completa un precio o un centro de costo, sube
+        // la planilla del mes siguiente y su trabajo desaparece sin aviso.
+        if (corr.accion === 'valorizar' || corr.accion === 'enriquecer') {
+            const ov = {};
+            if (corr.precio_unitario_correcto > 0) ov.precio_unitario = corr.precio_unitario_correcto;
+            if (corr.importe_correcto > 0) ov.importe = corr.importe_correcto;
+            if (corr.dominio_correcto) { ov.dominio = corr.dominio_correcto; ov.dominio_key = normalizeEquipoKey(corr.dominio_correcto); }
+            if (corr.centro_costo_correcto) ov.centro_costo = corr.centro_costo_correcto;
+            if (corr.lugar_carga_correcto) ov.lugar_carga = corr.lugar_carga_correcto;
+            if (corr.sector_correcto) ov.sector = corr.sector_correcto;
+            // "Unificar variantes" (panel.js): mismo mecanismo, para los campos de texto libre
+            // que se normalizan a mano después de revisar el grupo (combustible, chofer — el
+            // resto de los campos de texto ya se cubre arriba).
+            if (corr.combustible_correcto) ov.combustible = corr.combustible_correcto;
+            if (corr.chofer_correcto) ov.chofer = corr.chofer_correcto;
+            finales.push({ ...r, ...ov, _corregido: true, _precio_completado: corr.accion === 'valorizar' || undefined });
+            continue;
+        }
+
+        if (corr.accion === 'asignar') {
+            // Misma normalización que usa el resto del sistema para cruzar Cargas/GPS/Equipos
+            // (normalizeEquipoKey saca ceros a la izquierda: BM07 y BM7 quedan con la misma
+            // clave). Antes esta clave se armaba a mano cada vez que se reimportaba el archivo,
+            // así que una carga asignada manualmente podía quedar con una interno_key que no
+            // calzaba con el resto de las planillas de ese equipo, afectando su análisis.
+            const key = normalizeEquipoKey(corr.interno_correcto);
+            const overrides = {};
+            if (corr.centro_costo_correcto) overrides.centro_costo = corr.centro_costo_correcto;
+            if (corr.lugar_carga_correcto)  overrides.lugar_carga  = corr.lugar_carga_correcto;
+            if (corr.sector_correcto)       overrides.sector        = corr.sector_correcto;
+            finales.push({
+                ...r,
+                ...overrides,
+                interno: corr.interno_correcto,
+                interno_key: key,
+                dominio: corr.dominio_correcto || r.dominio || '',
+                dominio_key: normalizeEquipoKey(corr.dominio_correcto || r.dominio || ''),
+                _corregido: true,                               // marca visible en la UI
+                _interno_original: r.interno                   // conserva el valor del Excel
+            });
+        }
+    }
+    // Marcado de duplicados exactos: se hace DESPUÉS de aplicar las correcciones, porque una
+    // corrección puede cambiar el interno o el centro de costo, y esos campos forman parte de
+    // la identidad de la carga.
+    let dupes = 0;
+    finales.forEach(r => {
+        const k = claveExacta(r);
+        if (!k) return;
+        if (yaExistentes.has(k)) {
+            r._dupe_exacta = true;
+            dupes++;
+        } else {
+            yaExistentes.add(k);
+        }
+    });
+    if (dupes) console.log(`[DEDUPE] ${dupes} registro(s) idéntico(s) marcados como duplicado exacto y apartados del análisis`);
+
+    return writeTx(['raw_records'], ([store]) => { finales.forEach(r => store.add(r)); return finales.length; });
+}
+
+export function getAllRawRecords() { return readAll('raw_records'); }
+
+/**
+ * Inserta filas de "Entregas (Loop)" cruzando por N° de Remito, en vez de agregarlas todas como
+ * filas nuevas. El mismo remito puede aparecer en más de una hoja de "Informe Entregas Loop"
+ * (una entrega con parte de hormigón y parte de bombeado cae en las dos) y también en
+ * "Exportado informe de Viajes" — mismo remito, con los horarios del viaje en vez del volumen.
+ *
+ * Regla acordada con el usuario: si dos filas del mismo remito y el mismo equipo coinciden en
+ * todo lo que las dos tienen en común (fecha, volumen cuando ambas lo traen), es el mismo dato
+ * repetido — se conserva un solo registro, completado con lo que cada fuente aporta de más
+ * (ej. el volumen de una, los horarios de la otra). Si no coinciden, no se adivina cuál es el
+ * correcto: se guardan las dos filas y se marcan `_conflicto_remito` para que el diagnóstico las
+ * junte y las muestre lado a lado — la decisión queda para revisión manual.
+ */
+export async function insertEntregasLoop(filas) {
+    const existentes = (await getAllRawRecords()).filter(r => r.type === 'entrega');
+    const porRemito = new Map();
+    existentes.forEach(r => {
+        if (!porRemito.has(r.remito)) porRemito.set(r.remito, []);
+        porRemito.get(r.remito).push(r);
+    });
+
+    const nuevas = [];
+    // id -> cambios ACUMULADOS. Un mismo remito real puede tocar el mismo registro existente más
+    // de una vez dentro de esta única llamada (típico: "Informe Entregas Loop" trae el mismo
+    // remito en Hormigón, Bombeado Y Otros — son subconjuntos entre sí, no entregas distintas).
+    // Antes cada toque encolaba su propio { id, cambios } y el final hacía un get()+put() POR
+    // CADA UNO: como los tres get() se disparan antes de que el primer put() resuelva, cada uno
+    // lee la MISMA foto vieja del registro — el último put en resolver ganaba y pisaba con esa
+    // foto vieja lo que el anterior acababa de guardar (el volumen, en la práctica: measured
+    // pérdida real de 31.822 m³ sobre 55.364,5 esperados — ver tools/verificar-datos-reales.mjs).
+    // Acumulando en un Map por id se hace UN solo get()+put() por registro, con los cambios de
+    // los tres toques ya combinados — no hay dos escrituras que puedan pisarse.
+    const actualizaciones = new Map(); // id -> cambios
+
+    const acumular = (id, cambios) => {
+        if (id === undefined) return;
+        actualizaciones.set(id, { ...(actualizaciones.get(id) || {}), ...cambios });
+    };
+
+    for (const fila of filas) {
+        const grupo = porRemito.get(fila.remito) || [];
+        const compatible = grupo.find(r => {
+            if ((r.interno_key || r.interno) !== (fila.interno_key || fila.interno)) return false;
+            if (r.volumen > 0 && fila.volumen > 0 && Math.round(r.volumen * 100) !== Math.round(fila.volumen * 100)) return false;
+            if (r.fecha && fila.fecha && r.fecha !== fila.fecha) return false;
+            return true;
+        });
+
+        if (compatible) {
+            const cambios = {};
+            if (!(compatible.volumen > 0) && fila.volumen > 0) cambios.volumen = fila.volumen;
+            if (!compatible.fecha && fila.fecha) cambios.fecha = fila.fecha;
+            // Los datos originales de cada fuente se conservan los dos (sin pisarse), para no
+            // perder ninguna columna del Excel aunque el registro final sea uno solo.
+            cambios.datos = { ...(fila.datos || {}), ...(compatible.datos || {}) };
+            cambios.fuentes = [...new Set([...(compatible.fuentes || [compatible.formato]), fila.formato])];
+            Object.assign(compatible, cambios);
+            acumular(compatible.id, cambios);
+            continue; // fusionada: no se agrega como fila nueva
+        }
+
+        if (grupo.length) {
+            // Mismo remito, pero nada coincidió con ningún registro del grupo: conflicto real,
+            // no una repetición. Se guardan TODOS (los que ya había + el nuevo) marcados, en vez
+            // de quedarse con uno a ciegas.
+            grupo.forEach(r => {
+                if (!r._conflicto_remito) {
+                    r._conflicto_remito = true;
+                    acumular(r.id, { _conflicto_remito: true });
+                }
+            });
+            fila._conflicto_remito = true;
+        }
+
+        nuevas.push(fila);
+        porRemito.set(fila.remito, [...grupo, fila]);
+    }
+
+    return writeTx(['raw_records'], ([store]) => {
+        nuevas.forEach(r => store.add(r));
+        actualizaciones.forEach((cambios, id) => {
+            const req = store.get(id);
+            req.onsuccess = () => { const rec = req.result; if (rec) store.put({ ...rec, ...cambios }); };
+        });
+        return nuevas.length;
+    });
+}
+
+/** Actualiza campos puntuales de un raw_record ya almacenado (por ejemplo al corregir inline). */
+export async function updateRawRecord(id, cambios) {
+    const tx = getDB().transaction(['raw_records'], 'readwrite');
+    const store = tx.objectStore('raw_records');
+    return new Promise((resolve, reject) => {
+        const req = store.get(id);
+        req.onsuccess = () => {
+            const rec = req.result;
+            if (!rec) { reject(new Error(`raw_record ${id} no encontrado`)); return; }
+            store.put({ ...rec, ...cambios });
+        };
+        tx.oncomplete = () => resolve();
+        tx.onerror = (e) => reject(e.target.error);
+    });
+}
+
+/** Elimina un raw_record por su id autoincrement. */
+export function deleteRawRecord(id) {
+    return writeTx(['raw_records'], ([store]) => { store.delete(id); });
+}
+
+/** Borra los movimientos de un archivo puntual, para poder reimportarlo sin duplicar. */
+export function deleteRecordsPorArchivo(filename) {
+    return new Promise((resolve, reject) => {
+        const tx = getDB().transaction(['raw_records'], 'readwrite');
+        const store = tx.objectStore('raw_records');
+        const idx = store.index('source_file');
+        const req = idx.openCursor(IDBKeyRange.only(filename));
+        let n = 0;
+        req.onsuccess = (e) => {
+            const cur = e.target.result;
+            if (cur) { cur.delete(); n++; cur.continue(); }
+        };
+        tx.oncomplete = () => resolve(n);
+        tx.onerror = (ev) => reject(ev.target.error);
+    });
+}
+
+export function clearRawRecords() {
+    return writeTx(['raw_records'], ([store]) => { store.clear(); });
+}
+
+/** Tipos de movimiento presentes (carga, gps, cubiertas, insumos, filtros, …). */
+export async function getTiposDeMovimiento() {
+    const recs = await getAllRawRecords();
+    const m = new Map();
+    recs.forEach(r => {
+        if (!m.has(r.type)) m.set(r.type, { tipo: r.type, etiqueta: r.type_label || r.type, n: 0, posibleDuplicadoCargas: !!r._posible_duplicado_cargas, resumenDerivable: !!r._resumen_derivable });
+        m.get(r.type).n++;
+    });
+    return [...m.values()].sort((a, b) => b.n - a.n);
+}
+
+// ============================ OTROS ============================
+
+export function insertEstimados(arr) {
+    return writeTx(['estimados'], ([store]) => { arr.forEach(e => store.put(e)); return arr.length; });
+}
+export function getAllEstimados() { return readAll('estimados'); }
+export function updateEstimado(e) {
+    return writeTx(['estimados'], ([store]) => { store.put(e); return e; });
+}
+
+export function insertPrecios(arr) {
+    return writeTx(['precios'], ([store]) => { arr.forEach(p => store.put(p)); return arr.length; });
+}
+export function getAllPrecios() { return readAll('precios'); }
+
+export function registrarArchivo(meta) {
+    return writeTx(['files_meta'], ([store]) => { store.put(meta); return meta; });
+}
+export function getArchivosProcesados() { return readAll('files_meta'); }
+
+/**
+ * Borra los MOVIMIENTOS pero conserva el maestro (padrón y metas) con sus ediciones.
+ * Es lo habitual al recargar los archivos del mes: no tiene sentido volver a cargar el
+ * padrón y perder las correcciones hechas a mano.
+ */
+export function clearMovimientos() {
+    return writeTx(['raw_records', 'files_meta'], (stores) => { stores.forEach(s => s.clear()); });
+}
+
+// ============================ CORRECCIONES DE CARGAS ============================
+
+/**
+ * Corrección persistente de una carga huérfana.
+ * { huella, accion: 'asignar'|'eliminar', interno_correcto, dominio_correcto,
+ *   interno_original, fecha, litros, importe, nota, timestamp }
+ */
+export function getCorreccionesCargas() { return readAll('correccionesCargas'); }
+
+export function saveCorreccionCarga(corr) {
+    return writeTx(['correccionesCargas'], ([store]) => { store.put({ ...corr, timestamp: new Date().toISOString() }); return corr; });
+}
+
+export function deleteCorreccionCarga(huella) {
+    return writeTx(['correccionesCargas'], ([store]) => { store.delete(huella); });
+}
+
+// ============================ DISPONIBILIDAD DIARIA ============================
+
+/**
+ * Estado de un equipo en un día específico.
+ * { id: 'INTERNO|FECHA', interno, interno_key, fecha, estado, nota, timestamp }
+ *
+ * Estados reconocidos: 'operativo', 'taller_ext', 'taller_int',
+ *                      'chofer_ausente', 'transferido', 'fuera_servicio'
+ * Para 'transferido': se puede agregar `sede` (ej: 'San Juan', 'Tunuyán').
+ */
+export function getDisponibilidad() { return readAll('disponibilidad'); }
+
+export function upsertDisponibilidad(d) {
+    const id = `${d.interno}|${d.fecha}`;
+    return writeTx(['disponibilidad'], ([store]) => {
+        store.put({ ...d, id, timestamp: new Date().toISOString() });
+        return d;
+    });
+}
+
+export function deleteDisponibilidad(interno, fecha) {
+    return writeTx(['disponibilidad'], ([store]) => { store.delete(`${interno}|${fecha}`); });
+}
+
+// ============================ HISTORIAL DE EDICIONES ============================
+
+/**
+ * Registro de auditoría de cualquier edición manual sobre cualquier tabla: quién campo,
+ * en qué registro, de qué valor a qué valor y cuándo. No se pisa nunca — es un log que
+ * crece, no un estado. { id, tabla, registroId, etiqueta, campo, valorAnterior, valorNuevo, fecha }
+ */
+export function registrarEdicion({ tabla, registroId, etiqueta, campo, valorAnterior, valorNuevo }) {
+    return writeTx(['edicionesLog'], ([store]) => {
+        store.add({ tabla, registroId, etiqueta, campo, valorAnterior, valorNuevo, fecha: new Date().toISOString() });
+    });
+}
+
+export function getEdicionesLog() { return readAll('edicionesLog'); }
+
+// ============================ ETIQUETAS DE COLUMNA (tablas de movimientos) ============================
+
+/** Etiquetas de columna renombradas a mano por tipo de movimiento: { [tipo]: { [campoKey]: label } } */
+export async function getColLabelsMov() {
+    const r = await readOne('config', 'col_labels_mov');
+    return (r && r.v) || {};
+}
+export async function setColLabelMov(tipo, campoKey, label) {
+    const actual = await getColLabelsMov();
+    const siguiente = { ...actual, [tipo]: { ...(actual[tipo] || {}), [campoKey]: label } };
+    return writeTx(['config'], ([store]) => { store.put({ k: 'col_labels_mov', v: siguiente }); return siguiente; });
+}
+
+// ============================ RALENTÍ: ACEPTABLE / SEGUIMIENTO ============================
+
+/**
+ * Estado que el usuario le asigna al ralentí de un equipo puntual, para que el diagnóstico
+ * automático deje de repetirle la misma alerta: { interno, estado: 'aceptable'|'seguimiento',
+ * motivo, fecha }. No borra ni modifica ningún dato de origen, solo cómo se interpreta.
+ */
+/** Referentes de meta elegidos a mano: {interno, excluidos:[], incluidos:[]}. Ver v14. */
+export function getReferentesMeta() { return readAll('referentesMeta'); }
+export function setReferentesMeta(interno, excluidos = [], incluidos = []) {
+    return writeTx(['referentesMeta'], ([store]) => {
+        // Sin nada elegido a mano se borra la fila: así la regla automática vuelve a mandar,
+        // en vez de quedar una fila vacía que igual se consulta en cada render.
+        if (!excluidos.length && !incluidos.length) store.delete(interno);
+        else store.put({ interno, excluidos, incluidos, fecha: new Date().toISOString() });
+    });
+}
+
+export function getRalentiEstados() { return readAll('ralentiEstados'); }
+/** periodo: {desde, hasta} (ISO strings) del análisis activo al momento de guardar. */
+export function setRalentiEstado(interno, estado, motivo = '', periodo = null) {
+    return writeTx(['ralentiEstados'], ([store]) => {
+        const rec = { interno, estado, motivo, fecha: new Date().toISOString() };
+        if (periodo && periodo.desde && periodo.hasta) rec.periodo = periodo;
+        store.put(rec);
+    });
+}
+export function quitarRalentiEstado(interno) {
+    return writeTx(['ralentiEstados'], ([store]) => { store.delete(interno); });
+}
+
+// ============================ CONSUMO FUERA DE LA FLOTA: ACEPTADO ============================
+
+/**
+ * Un código/dominio del hallazgo "consumo fuera de la flota" (vehículo con patente sin interno,
+ * planta, u otros) marcado como "así está bien" — por ejemplo un vehículo de un programa de
+ * préstamo/demo que nunca va a tener un interno propio en el padrón, pero sí tiene centro de
+ * costo asignado. { codigo, motivo, fecha }. `codigo` es el mismo valor que se muestra en el
+ * hallazgo (el interno/dominio huérfano), no un interno real del maestro.
+ */
+export function getNoFlotaAceptados() { return readAll('noFlotaAceptados'); }
+/** periodo: {desde, hasta} (ISO strings) del análisis activo. Null = aplica siempre. */
+export function setNoFlotaAceptado(codigo, motivo = '', periodo = null) {
+    return writeTx(['noFlotaAceptados'], ([store]) => {
+        const rec = { codigo, motivo, fecha: new Date().toISOString() };
+        if (periodo && periodo.desde && periodo.hasta) rec.periodo = periodo;
+        store.put(rec);
+    });
+}
+export function quitarNoFlotaAceptado(codigo) {
+    return writeTx(['noFlotaAceptados'], ([store]) => { store.delete(codigo); });
+}
+
+// ============================ ACCIONES AUTOMÁTICAS (para revisión) ============================
+
+/**
+ * Registro de una corrección que aplicó sola el diagnóstico automático (ver
+ * js/data/autocorreccion.js): dar de alta un interno nuevo, aceptar un código que no se puede
+ * resolver más, o alinear una meta vacía al consumo real. No pide permiso antes — eso volvería
+ * todo manual otra vez — pero queda anotado con motivo y fecha para poder revisarlo y, si hace
+ * falta, deshacerlo. `revisado` empieza en `false`; se pone en `true` cuando alguien lo mira
+ * desde el panel de revisión (no hace falta deshacerlo para marcarlo como visto).
+ * { id, tipo: 'alta_interno'|'aceptado_no_flota'|'meta_alineada', codigo, motivo, detalle,
+ *   fecha, revisado }
+ */
+export function registrarAccionAutomatica({ tipo, codigo, motivo, detalle = '' }) {
+    return writeTx(['accionesAutomaticas'], ([store]) => {
+        store.add({ tipo, codigo, motivo, detalle, fecha: new Date().toISOString(), revisado: false });
+    });
+}
+export function getAccionesAutomaticas() { return readAll('accionesAutomaticas'); }
+export function marcarAccionRevisada(id) {
+    return writeTx(['accionesAutomaticas'], ([store]) => {
+        const req = store.get(id);
+        req.onsuccess = () => { const rec = req.result; if (rec) store.put({ ...rec, revisado: true }); };
+    });
+}
+
+/**
+ * Marca una acción automática como deshecha — a propósito NO se borra la fila: si se borrara,
+ * el próximo renderPanel() volvería a ver exactamente las mismas condiciones (el mismo código
+ * sin equipo, la misma meta vacía) y la aplicaría sola otra vez, haciendo que "Deshacer" no
+ * durara ni una recarga de página. `aplicarCorreccionesAutomaticas()` (autocorreccion.js) revisa
+ * `deshecha` antes de actuar y salta cualquier código que ya se deshizo a mano.
+ */
+export function marcarAccionDeshecha(id) {
+    return writeTx(['accionesAutomaticas'], ([store]) => {
+        const req = store.get(id);
+        req.onsuccess = () => { const rec = req.result; if (rec) store.put({ ...rec, deshecha: true, fecha_deshecha: new Date().toISOString() }); };
+    });
+}
+
+// ============================ EQUIPOS APARTADOS DEL ANÁLISIS ============================
+
+/**
+ * Equipo que sigue en el maestro y en las tablas, pero que queda afuera del diagnóstico y de los
+ * promedios porque sus datos no representan su operación real. El caso típico: una unidad que
+ * pasó a San Juan y por eso deja de reportar en el Resumen de Flota de estos archivos — no está
+ * fallando, simplemente no se la está midiendo acá, y tratarla como si trabajara cero genera
+ * alertas falsas mes tras mes. { interno, motivo, sede, fecha }
+ */
+export function getEquiposExcluidos() { return readAll('equiposExcluidos'); }
+export function setEquipoExcluido(interno, motivo = '', sede = '') {
+    return writeTx(['equiposExcluidos'], ([store]) => {
+        store.put({ interno, motivo, sede, fecha: new Date().toISOString() });
+    });
+}
+export function quitarEquipoExcluido(interno) {
+    return writeTx(['equiposExcluidos'], ([store]) => { store.delete(interno); });
+}
+
+// ============================ PREFIJOS "FUERA DE FLOTA" OFICIALIZADOS ============================
+
+/**
+ * Código sin km ni horas (caldera, limpieza, caloventor…) que se decidió dar de alta "en serio"
+ * en vez de dejarlo como huérfano sin clasificar. Distinto de `noFlotaAceptados` (que solo oculta
+ * un código puntual sin nombrarlo): esto registra el PREFIJO completo con su denominación, así
+ * que cubre a todos los internos de ese prefijo, presentes y futuros (CA01, CA02… bajo "CALDERA").
+ * Restringido a Mendoza por decisión explícita: ver detectarPrefijosNuevos() en diagnostico.js.
+ * { prefijo, denominacion, provincia, fecha }
+ */
+export function getPrefijosNoFlota() { return readAll('prefijosNoFlota'); }
+export function agregarPrefijoNoFlota(prefijo, denominacion, provincia = 'MENDOZA') {
+    return writeTx(['prefijosNoFlota'], ([store]) => {
+        store.put({ prefijo, denominacion, provincia, fecha: new Date().toISOString() });
+    });
+}
+export function quitarPrefijoNoFlota(prefijo) {
+    return writeTx(['prefijosNoFlota'], ([store]) => { store.delete(prefijo); });
+}
+
+// ============================ EQUIPOS "EN SEGUIMIENTO" ============================
+
+/**
+ * Un equipo con pocas cargas o poca cobertura NO se excluye del análisis (para eso está
+ * `equiposExcluidos`, que sí lo saca de las cuentas): acá solo queda ANOTADO, con un motivo,
+ * para que la próxima vez que aparezca con el mismo problema no se vuelva a investigar de cero.
+ * Marcar para seguimiento no vuelve confiable el dato por sí solo — lo que lo vuelve confiable
+ * es que, con más períodos importados, la cobertura real mejore o se mantenga estable; el motivo
+ * queda como explicación mientras tanto (equipo fuera de servicio parte del período, cambio de
+ * sucursal, baja de producción, carga fuera de la empresa, u otro).
+ * { interno, motivo, categoria, fecha }
+ */
+export function getSeguimientoEquipos() { return readAll('seguimientoEquipos'); }
+export function setSeguimientoEquipo(interno, motivo = '', categoria = 'otro', rangos) {
+    return writeTx(['seguimientoEquipos'], ([store]) => {
+        // Lee primero para preservar rangos existentes cuando no se los pasa.
+        const req = store.get(interno);
+        req.onsuccess = () => {
+            const actual = req.result || {};
+            store.put({
+                ...actual,
+                interno, motivo, categoria, fecha: new Date().toISOString(),
+                ...(rangos !== undefined ? { rangos } : {})
+            });
+        };
+    });
+}
+/** Actualiza solo el array de rangos de un equipo sin tocar categoria/motivo. */
+export async function setSeguimientoRangos(interno, rangos) {
+    const todos = await readAll('seguimientoEquipos');
+    const actual = todos.find(r => r.interno === interno) || { interno, motivo: '', categoria: 'otro', fecha: new Date().toISOString() };
+    return writeTx(['seguimientoEquipos'], ([store]) => {
+        store.put({ ...actual, rangos });
+    });
+}
+export function quitarSeguimientoEquipo(interno) {
+    return writeTx(['seguimientoEquipos'], ([store]) => { store.delete(interno); });
+}
+
+// ============================ ACTIVIDAD DECLARADA ============================
+
+/**
+ * Km u horas declarados a mano para un equipo que no reporta GPS. Sin esto, un equipo con
+ * cargas pero sin actividad medida no tiene forma de tener un consumo: los litros se conocen,
+ * la actividad no. Declararla — aunque sea como rango aproximado — cierra el cálculo.
+ *
+ * `periodo` es 'TODO' (todo el rango analizado) o 'YYYY-MM' (un mes puntual). Lo mensual gana
+ * sobre lo global cuando existe: permite decir "enero-febrero temporada baja 400 km, el resto
+ * 1.200" sin tener que promediar a mano.
+ * { id: 'INTERNO|PERIODO', interno, periodo, unidad: 'km'|'horas', valor_min, valor_max,
+ *   temporada: 'normal'|'baja'|'alta', nota, fecha }
+ */
+export function getActividadEstimada() { return readAll('actividadEstimada'); }
+
+export function setActividadEstimada(a) {
+    const id = `${a.interno}|${a.periodo || 'TODO'}`;
+    return writeTx(['actividadEstimada'], ([store]) => {
+        store.put({ ...a, id, periodo: a.periodo || 'TODO', fecha: new Date().toISOString() });
+    });
+}
+
+export function quitarActividadEstimada(interno, periodo = 'TODO') {
+    return writeTx(['actividadEstimada'], ([store]) => { store.delete(`${interno}|${periodo}`); });
+}
+
+// ============================ RECLAMOS DE REVISIÓN DE GPS ============================
+
+/**
+ * Ticket interno para pedir revisión del equipo GPS de un equipo (ej. ralentí inverosímil
+ * que probablemente sea un reporte del GPS mal calibrado, no un desperdicio real).
+ * Alcance de esta versión: registro local exportable/imprimible. Todavía no hay integración
+ * con ningún proveedor — se deja el campo `proveedor` listo para cuando se sume esa info.
+ * { id, interno, motivo, proveedor, fecha, estado: 'abierto'|'cerrado', notas }
+ */
+export function getReclamosGPS() { return readAll('reclamosGPS'); }
+export function crearReclamoGPS(reclamo) {
+    return writeTx(['reclamosGPS'], ([store]) => {
+        const registro = { estado: 'abierto', proveedor: '', notas: '', ...reclamo, fecha: new Date().toISOString() };
+        store.add(registro);
+        return registro;
+    });
+}
+export function actualizarReclamoGPS(id, cambios) {
+    const tx = getDB().transaction(['reclamosGPS'], 'readwrite');
+    const store = tx.objectStore('reclamosGPS');
+    return new Promise((resolve, reject) => {
+        const req = store.get(id);
+        req.onsuccess = () => {
+            const rec = req.result;
+            if (!rec) { reject(new Error(`reclamo ${id} no encontrado`)); return; }
+            store.put({ ...rec, ...cambios });
+        };
+        tx.oncomplete = () => resolve();
+        tx.onerror = (e) => reject(e.target.error);
+    });
+}
+
+/** Borra absolutamente todo, incluido el maestro y las columnas propias. */
+export function clearAllData() {
+    return writeTx(
+        ['equipos', 'raw_records', 'files_meta', 'estimados', 'precios', 'mapeos', 'config',
+         'correccionesCargas', 'disponibilidad', 'edicionesLog', 'ralentiEstados', 'reclamosGPS', 'noFlotaAceptados',
+         'equiposExcluidos', 'prefijosNoFlota', 'seguimientoEquipos', 'actividadEstimada', 'accionesAutomaticas', 'referentesMeta'],
+        (stores) => { stores.forEach(s => s.clear()); }
+    );
+}
+
+export async function getDBStats() {
+    const [equipos, records, archivos, cols] = await Promise.all([
+        getAllEquipos(), getAllRawRecords(), getArchivosProcesados(), getColumnasExtra()
+    ]);
+    const porTipo = {};
+    records.forEach(r => { porTipo[r.type] = (porTipo[r.type] || 0) + 1; });
+    return {
+        equipos: equipos.length,
+        conMeta: equipos.filter(e => e.meta_valor > 0).length,
+        movimientos: records.length,
+        porTipo,
+        cargas: porTipo.carga || 0,
+        gps: porTipo.gps || 0,
+        archivos: archivos.length,
+        columnasExtra: cols.length
+    };
+}

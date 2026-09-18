@@ -1,0 +1,590 @@
+/**
+ * Importador de planillas.
+ *
+ * Reconoce cuatro formatos conocidos (Equipos, Cargas, Resumen de Flota, Consumos Estimados)
+ * y acepta CUALQUIER otra planilla mediante un importador genérico, con la única condición de
+ * que tenga una columna que identifique al equipo por interno o por dominio. Eso permite
+ * sumar cubiertas, insumos, filtros o lo que venga después sin tocar el código.
+ *
+ * Dos decisiones de diseño importantes:
+ *  1. INTERNO + DOMINIO como doble clave. Hay planillas que traen solo el interno y otras
+ *     solo la patente; guardando ambas normalizadas, el cruce contra el maestro funciona con
+ *     cualquiera de las dos y dejan de perderse registros.
+ *  2. Se preservan TODAS las columnas originales en `datos`. Los campos que el sistema
+ *     entiende (litros, km, horas...) se extraen aparte, pero nada del Excel se descarta.
+ */
+import {
+    upsertEquipos, insertRawRecords, insertEstimados, insertPrecios, registrarArchivo, getMapeo,
+    insertEntregasLoop
+} from '../data/database.js';
+import {
+    parseDate, parseNumber, normalizeString, normalizeEquipoKey, aggregateHours, parseExcelHours,
+    getDenominacion, parseConsumoEstimado, extraerIdentidad, partesFecha, slugCampo, parseHoraDeFecha
+} from '../data/normalizer.js';
+
+// Nombres de columna que identifican al equipo, en orden de preferencia.
+const COLS_IDENTIDAD = ['INTERNO-DOMINIO', 'INTERNO', 'UNIDAD', 'MOVIL', 'EQUIPO', 'DOMINIO', 'PATENTE', 'MATRICULA', 'VEHICULO'];
+
+export async function parseXLSX(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+            try {
+                resolve(await procesarLibro(new Uint8Array(e.target.result), file.name));
+            } catch (err) { reject(err); }
+        };
+        reader.onerror = reject;
+        reader.readAsArrayBuffer(file);
+    });
+}
+
+async function procesarLibro(data, filename) {
+    const workbook = XLSX.read(data, { type: 'array' });
+    const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+    const rawRows = XLSX.utils.sheet_to_json(firstSheet, { header: 1, defval: '' });
+    if (!rawRows.length) throw new Error('El archivo está vacío');
+
+    const det = detectarFormato(rawRows, filename);
+    if (det.headerRowIdx === -1) {
+        return await registrar({ filename, tipo: 'DESCONOCIDO', filas: 0, motivo: 'No se encontró una fila de encabezados con una columna de interno o dominio.' });
+    }
+
+    const headers = extraerHeaders(rawRows[det.headerRowIdx]);
+    let filas = filasComoObjetos(rawRows, det.headerRowIdx, headers);
+
+    // "Informe Entregas Loop" viene con el detalle repartido en varias hojas (Hormigón,
+    // Bombeado, Otros: una fila de encabezado igual en cada una). El resto de los formatos se
+    // queda con la primera hoja nada más — leer todas a ciegas arriesgaría, por ejemplo, sumar
+    // dos veces una fila que Excel repite en dos pestañas de un archivo que no se diseñó para
+    // este cruce. Acá sí hace falta, aunque verificado contra datos reales Bombeado y Otros
+    // resultaron ser subconjuntos exactos de Hormigón (0 remitos nuevos, todo el volumen ya
+    // estaba en la primera hoja): se siguen leyendo las tres por seguridad ante un futuro
+    // export de Loop que sí traiga algo distinto en esas hojas — no porque hoy aporten datos.
+    if (det.tipo === 'ENTREGAS_LOOP' && det.formatoEntregas === 'detalle' && workbook.SheetNames.length > 1) {
+        filas.forEach(f => { f.__hoja = workbook.SheetNames[0]; });
+        for (const nombreHoja of workbook.SheetNames.slice(1)) {
+            const rowsHoja = XLSX.utils.sheet_to_json(workbook.Sheets[nombreHoja], { header: 1, defval: '' });
+            if (!rowsHoja.length) continue;
+            const detHoja = detectarFormato(rowsHoja, filename);
+            if (detHoja.headerRowIdx === -1 || detHoja.tipo !== 'ENTREGAS_LOOP') continue; // hoja vacía o con otra forma
+            const headersHoja = extraerHeaders(rowsHoja[detHoja.headerRowIdx]);
+            const filasHoja = filasComoObjetos(rowsHoja, detHoja.headerRowIdx, headersHoja);
+            filasHoja.forEach(f => { f.__hoja = nombreHoja; });
+            filas = filas.concat(filasHoja);
+        }
+    }
+
+    // Mapeo guardado por el usuario para este tipo (si corrigió alguna columna alguna vez).
+    const mapeoGuardado = await getMapeo(det.tipo).catch(() => null);
+    const mapeo = (mapeoGuardado && mapeoGuardado.columnas) || {};
+
+    let n = 0;
+    if (det.tipo === 'EQUIPOS') n = await handleEquipos(filas, filename, mapeo);
+    else if (det.tipo === 'ESTIMADOS') n = await handleEstimados(filas, filename, mapeo);
+    else if (det.tipo === 'CARGAS') { n = await handleCargas(filas, filename, mapeo); await handlePrecios(workbook, filename); }
+    else if (det.tipo === 'GPS') n = await handleGPS(filas, filename, det.desde, det.hasta, mapeo);
+    else if (det.tipo === 'GPS_RESUMEN_VIAJE') n = await handleGPSResumenViaje(rawRows, det.desde, det.hasta, det.unidad, filename);
+    else if (det.tipo === 'ENTREGAS_LOOP') n = await handleEntregasLoop(filas, filename, det.formatoEntregas, mapeo);
+    else n = await handleGenerico(filas, filename, det, mapeo);
+
+    return await registrar({
+        filename, tipo: det.tipo, etiqueta: det.etiqueta, filas: n,
+        columnas: headers.filter(Boolean),
+        periodo_desde: det.desde || null, periodo_hasta: det.hasta || null
+    });
+}
+
+async function registrar(meta) {
+    meta.procesado = new Date().toISOString();
+    await registrarArchivo(meta);
+    console.log(`[${meta.tipo}] ${meta.filename}: ${meta.filas} filas`);
+    return meta;
+}
+
+// ---------------------------------------------------------------- detección
+
+function detectarFormato(rawRows, filename) {
+    const out = { tipo: 'UNKNOWN', etiqueta: '', headerRowIdx: -1, desde: null, hasta: null };
+    const limite = Math.min(15, rawRows.length);
+
+    // Resumen de viaje: formato vertical para un solo equipo (clave: valor), sin desglose mensual.
+    // Wara lo genera por unidad y período personalizado. No tiene encabezado tabular: la fila [0]
+    // dice "INFORME RESUMEN DE VIAJE" y el equipo aparece en la fila "Unidad:".
+    if (rawRows.length > 0 && normalizeString(rawRows[0][0]).includes('INFORME RESUMEN DE VIAJE')) {
+        out.tipo = 'GPS_RESUMEN_VIAJE';
+        out.etiqueta = 'Resumen de viaje (GPS)';
+        out.headerRowIdx = 0;
+        for (let i = 0; i < Math.min(10, rawRows.length); i++) {
+            const c0 = normalizeString(rawRows[i][0]);
+            if (c0.includes('DESDE')) out.desde = parseDate(rawRows[i][1]);
+            if (c0.includes('HASTA')) out.hasta = parseDate(rawRows[i][1]);
+            if (c0.replace(/[:\s]+$/, '') === 'UNIDAD') out.unidad = String(rawRows[i][1] || '').trim();
+        }
+        return out;
+    }
+
+    for (let i = 0; i < limite; i++) {
+        const t = normalizeString(rawRows[i].join('|'));
+
+        if (out.headerRowIdx === -1) {
+            if (t.includes('CONSUMO ESTIMADO')) { out.tipo = 'ESTIMADOS'; out.etiqueta = 'Consumos Estimados'; out.headerRowIdx = i; }
+            else if (t.includes('LITROS') && t.includes('LUGAR DE CARGA')) { out.tipo = 'CARGAS'; out.etiqueta = 'Cargas de Combustible'; out.headerRowIdx = i; }
+            else if (t.includes('TIPO') && t.includes('MARCA') && t.includes('POTENCIA') && t.includes('INTERNO')) { out.tipo = 'EQUIPOS'; out.etiqueta = 'Equipos'; out.headerRowIdx = i; }
+            else if (t.includes('KILOMETROS RECORRIDOS') || t.includes('TIEMPO EN MOVIMIENTO')) { out.tipo = 'GPS'; out.etiqueta = 'Resumen de Flota (GPS)'; out.headerRowIdx = i; }
+            // Entregas de Loop (logística): dos exportaciones del mismo sistema, cruzadas por
+            // N° de Remito — "Informe Entregas" (detalle por hoja: Hormigón/Bombeado/Otros, con
+            // volumen y datos de la obra) y "Exportado informe de Viajes" (mismos remitos, con
+            // horarios del viaje). Se unifican en una sola pestaña "Entregas (Loop)" en vez de
+            // quedar como archivos sueltos que muestran las mismas entregas de dos formas
+            // distintas — ver insertEntregasLoop() en database.js para el cruce por remito.
+            else if (t.includes('REMITO') && t.includes('VEHICULO') && t.includes('VOLUMEN')) { out.tipo = 'ENTREGAS_LOOP'; out.etiqueta = 'Entregas (Loop)'; out.headerRowIdx = i; out.formatoEntregas = 'detalle'; }
+            else if (t.includes('REMITO') && t.includes('VEHICULO') && (t.includes('SALIDA PLANTA') || t.includes('TIEMPO DE VIAJE') || t.includes('EN OBRA PREVISTA'))) { out.tipo = 'ENTREGAS_LOOP'; out.etiqueta = 'Entregas (Loop)'; out.headerRowIdx = i; out.formatoEntregas = 'viaje'; }
+            // Resumen ya calculado (m³ por camión y por mes) a partir de las mismas entregas de
+            // arriba: se importa igual (por si el usuario quiere mirarlo), pero marcado como
+            // derivable — no aporta datos nuevos, es un total de lo que ya se puede sumar desde
+            // "Entregas (Loop)".
+            else if (t.includes('VEHICULO') && (t.includes('VOLUMEN TOTAL') || t.includes('M³/MES') || t.includes('M3/MES')) && !t.includes('REMITO')) { out.tipo = 'RESUMEN_VOLUMEN_LOOP'; out.etiqueta = 'Volumen por camión (resumen)'; out.headerRowIdx = i; out.esResumenDerivable = true; }
+        }
+        // Los metadatos de período del reporte GPS pueden estar antes o después del encabezado.
+        const c0 = normalizeString(rawRows[i][0]);
+        if (c0.includes('DESDE')) out.desde = parseDate(rawRows[i][1]);
+        if (c0.includes('HASTA')) out.hasta = parseDate(rawRows[i][1]);
+    }
+
+    if (out.headerRowIdx !== -1) return out;
+
+    // ---- Importador genérico: buscar la primera fila que tenga una columna de identidad ----
+    for (let i = 0; i < limite; i++) {
+        const celdas = rawRows[i].map(c => normalizeString(c).replace(/\s+/g, ''));
+        const tieneId = celdas.some(c => c && COLS_IDENTIDAD.some(k => c.includes(k.replace(/[\s-]/g, ''))));
+        const suficientes = celdas.filter(Boolean).length >= 2;
+        if (tieneId && suficientes) {
+            out.tipo = slugCampo(filename.replace(/\.(xlsx|xls|csv)$/i, '').replace(/[\d_\-.]+$/g, ''));
+            out.etiqueta = tituloDesdeArchivo(filename);
+            out.headerRowIdx = i;
+            // Verificado contra datos reales: un archivo con LITROS + un tipo de combustible
+            // declarado, pero SIN "LUGAR DE CARGA" (la columna que distingue al formato oficial
+            // de Cargas de Combustible), suele ser una carga de combustible exportada desde OTRO
+            // sistema — ej. el reporte propio de una estación de servicio (GRIS S.A) — que
+            // duplica filas que ya están en Cargas_Combustible_*.xlsx con otro nombre de columna.
+            // No se descarta la importación (el usuario puede querer revisarla igual), pero se
+            // marca para no confundirla con una fuente nueva: no entra al cálculo de consumo real
+            // porque no es type==='carga' (eso ya pasaba), y acá además se avisa en la pestaña.
+            const t = normalizeString(rawRows[i].join('|'));
+            if (t.includes('LITROS') && t.includes('COMBUSTIBLE') && !t.includes('LUGAR DE CARGA')) {
+                out.posibleDuplicadoCargas = true;
+            }
+            return out;
+        }
+    }
+    return out;
+}
+
+function tituloDesdeArchivo(filename) {
+    const limpio = filename
+        .replace(/\.(xlsx|xls|csv)$/i, '')
+        .replace(/[_]+/g, ' ')
+        .replace(/\s*\d{4}\s*$/, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    // Un archivo bajado de un sistema puede llegar con un nombre opaco (un hash, un id largo
+    // sin vocales ni espacios). Usarlo como etiqueta de la pestaña deja al usuario mirando
+    // "286d98d10cb2f87e2d217e0362aad59e" sin saber qué subió: mejor un nombre honesto.
+    const opaco = !limpio
+        || (limpio.length >= 16 && !/\s/.test(limpio) && (/^[0-9a-f]+$/i.test(limpio) || !/[AEIOUaeiou]/.test(limpio)));
+    return opaco ? 'Otra planilla' : limpio;
+}
+
+/** Encabezados normalizados; las columnas repetidas se numeran para que no se pisen. */
+function extraerHeaders(fila) {
+    const cuenta = {};
+    return fila.map(h => {
+        const base = normalizeString(h).trim();
+        if (!base) return '';
+        cuenta[base] = (cuenta[base] || 0) + 1;
+        return cuenta[base] === 1 ? base : `${base}_${cuenta[base]}`;
+    });
+}
+
+function filasComoObjetos(rawRows, headerRowIdx, headers) {
+    const out = [];
+    for (let i = headerRowIdx + 1; i < rawRows.length; i++) {
+        const obj = {};
+        let hayDatos = false;
+        for (let j = 0; j < headers.length; j++) {
+            if (!headers[j]) continue;
+            obj[headers[j]] = rawRows[i][j];
+            if (rawRows[i][j] !== '' && rawRows[i][j] !== null) hayDatos = true;
+        }
+        // Número de fila tal como se ve en Excel (1-based, contando el encabezado). Sirve para
+        // que un hallazgo pueda decir "está en la fila 3600 de tu planilla" en vez de dejar al
+        // usuario buscando 38 filas sueltas entre cuatro mil.
+        if (hayDatos) { obj.__fila_excel = i + 1; out.push(obj); }
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------- helpers de fila
+
+/** Busca un valor por nombre de columna, respetando primero el mapeo elegido por el usuario. */
+function val(row, campo, candidatos, mapeo) {
+    if (mapeo && mapeo[campo] && row[mapeo[campo]] !== undefined) return row[mapeo[campo]];
+    return getValFuzzy(row, candidatos);
+}
+
+function getValFuzzy(row, possibleKeys) {
+    const keys = Object.keys(row).map(k => ({ original: k, norm: normalizeString(k).replace(/\s+/g, '') }));
+    for (const pk of possibleKeys) {
+        const normPk = normalizeString(pk).replace(/\s+/g, '');
+        const m = keys.find(rk => rk.norm.includes(normPk));
+        if (m) return row[m.original];
+    }
+    return null;
+}
+
+/** Identidad (interno + dominio) de una fila, mirando todas las columnas candidatas. */
+function identidadDeFila(row, mapeo) {
+    const candidatas = [];
+    if (mapeo && mapeo.interno && row[mapeo.interno] !== undefined) candidatas.push(row[mapeo.interno]);
+    if (mapeo && mapeo.dominio && row[mapeo.dominio] !== undefined) candidatas.push(row[mapeo.dominio]);
+    COLS_IDENTIDAD.forEach(c => {
+        const v = getValFuzzy(row, [c]);
+        if (v) candidatas.push(v);
+    });
+    return extraerIdentidad(...candidatas);
+}
+
+/** Campos comunes a todo movimiento: identidad, fecha desglosada y columnas originales. */
+function baseMovimiento(row, id, fecha, filename) {
+    const p = partesFecha(fecha);
+    return {
+        fila_excel: row.__fila_excel || null,
+        interno: id.interno,
+        dominio: id.dominio,
+        interno_key: id.interno_key,
+        dominio_key: id.dominio_key,
+        fecha,
+        anio: p.anio,
+        mes: p.mes,
+        dia: p.dia,
+        periodo: p.ym,
+        datos: { ...row },   // todas las columnas del Excel, sin descartar nada
+        source_file: filename
+    };
+}
+
+// ---------------------------------------------------------------- maestro
+
+async function handleEquipos(filas, filename, mapeo) {
+    const porKey = new Map();
+
+    filas.forEach(row => {
+        const id = identidadDeFila(row, mapeo);
+        if (!id.interno && !id.dominio) return;
+
+        const interno = id.interno || id.dominio;
+        const key = normalizeEquipoKey(interno);
+        const marca = normalizeString(val(row, 'marca', ['MARCA'], mapeo)) || '';
+        const modelo = normalizeString(val(row, 'modelo', ['MODELO'], mapeo)) || '';
+        const tipoExcel = val(row, 'tipo', ['TIPO', 'CATEGORIA'], mapeo);
+        // POTENCIA y CAPACIDAD vienen como texto libre con la unidad incluida ("310 HP",
+        // "440 KVA", "25 M3", "30 TN", "6X4"...), sin un formato único: se guardan tal cual,
+        // no se intenta parsear un número suelto.
+        const potencia = normalizeString(val(row, 'potencia', ['POTENCIA'], mapeo)) || '';
+        const capacidad = normalizeString(val(row, 'capacidad', ['CAPACIDAD'], mapeo)) || '';
+
+        const prev = porKey.get(key);
+        if (!prev) {
+            porKey.set(key, {
+                interno,
+                interno_key: key,
+                dominio: id.dominio,
+                dominio_key: id.dominio_key,
+                denominacion: getDenominacion(interno, tipoExcel),
+                marca, modelo,
+                potencia, capacidad,
+                tipo: normalizeString(tipoExcel) || '',
+                ubicacion: normalizeString(val(row, 'ubicacion', ['UBICACION'], mapeo)) || '',
+                anio: parseNumber(val(row, 'anio', ['ANO', 'AÑO'], mapeo)) || null,
+                origen: [filename]
+            });
+        } else {
+            // El Excel lista cada bomba dos veces (chasis con dominio + equipo bomba sin él).
+            // Se fusionan para no perder la patente ni el modelo del equipo montado.
+            prev.dominio = prev.dominio || id.dominio;
+            prev.dominio_key = prev.dominio_key || id.dominio_key;
+            prev.marca = unirDistinto(prev.marca, marca);
+            prev.modelo = unirDistinto(prev.modelo, modelo);
+            prev.potencia = unirDistinto(prev.potencia, potencia);
+            prev.capacidad = unirDistinto(prev.capacidad, capacidad);
+        }
+    });
+
+    const equipos = [...porKey.values()];
+    if (equipos.length) await upsertEquipos(equipos);
+    return equipos.length;
+}
+
+/**
+ * Los consumos estimados se escriben SOBRE el maestro (misma fila del equipo), no en una
+ * tabla aparte. Si el equipo todavía no existe (se subió esta planilla primero), se crea la
+ * fila igual: el orden en que se carguen los archivos no debe importar.
+ */
+async function handleEstimados(filas, filename, mapeo) {
+    const equipos = [];
+    const legacy = [];
+
+    filas.forEach(row => {
+        const id = identidadDeFila(row, mapeo);
+        if (!id.interno && !id.dominio) return;
+
+        const interno = id.interno || id.dominio;
+        const p = parseConsumoEstimado(val(row, 'meta', ['CONSUMO ESTIMADO', 'ESTIMADO', 'META'], mapeo));
+        const tipoExcel = val(row, 'tipo', ['TIPO'], mapeo);
+
+        equipos.push({
+            interno,
+            interno_key: normalizeEquipoKey(interno),
+            dominio: id.dominio,
+            dominio_key: id.dominio_key,
+            denominacion: getDenominacion(interno, tipoExcel),
+            marca: normalizeString(val(row, 'marca', ['MARCA'], mapeo)) || '',
+            modelo: normalizeString(val(row, 'modelo', ['MODELO'], mapeo)) || '',
+            meta_valor: p.valor,
+            meta_unidad: p.unidad,
+            meta_texto: p.texto,
+            origen: [filename]
+        });
+
+        legacy.push({
+            interno, interno_key: normalizeEquipoKey(interno),
+            consumo_estimado: p.texto, consumo_estimado_valor: p.valor,
+            consumo_estimado_unidad: p.unidad, source_file: filename
+        });
+    });
+
+    if (equipos.length) {
+        await upsertEquipos(equipos);
+        await insertEstimados(legacy); // compatibilidad con la vista de tablas anterior
+    }
+    return equipos.length;
+}
+
+function unirDistinto(a, b) {
+    if (!b) return a;
+    if (!a) return b;
+    if (a.includes(b) || b.includes(a)) return a.length >= b.length ? a : b;
+    return `${a} / ${b}`;
+}
+
+// ---------------------------------------------------------------- movimientos
+
+async function handleCargas(filas, filename, mapeo) {
+    const recs = [];
+    filas.forEach(row => {
+        const id = identidadDeFila(row, mapeo);
+        if (!id.interno && !id.dominio) return;
+
+        const fechaVal = val(row, 'fecha', ['FECHA', 'DATE'], mapeo);
+        const fecha = parseDate(fechaVal);
+        recs.push({
+            ...baseMovimiento(row, id, fecha, filename),
+            type: 'carga',
+            type_label: 'Cargas de Combustible',
+            // Solo algunas filas reales traen la fracción de hora en FECHA (ver
+            // parseHoraDeFecha) — cuando está, es la evidencia más clara de que dos cargas del
+            // mismo equipo, mismo día y litros parecidos son dos eventos reales separados en el
+            // tiempo, no la misma carga cargada dos veces.
+            hora: parseHoraDeFecha(fechaVal),
+            litros: parseNumber(val(row, 'litros', ['LITROS', 'CANTIDAD'], mapeo)),
+            importe: parseNumber(val(row, 'importe', ['COSTO TOTAL', 'IMPORTE', 'MONTO'], mapeo)),
+            precio_unitario: parseNumber(val(row, 'precio', ['PRECIO UNITARIO'], mapeo)),
+            combustible: normalizeString(val(row, 'combustible', ['TIPO DE COMBUSTIBLE'], mapeo)) || '',
+            chofer: normalizeString(val(row, 'chofer', ['CHOFER'], mapeo)) || '',
+            // OJO: no se puede buscar por candidato fuzzy 'TIPO' acá — "TIPO DE COMBUSTIBLE"
+            // (la columna de al lado, ya extraída arriba como combustible) también CONTIENE
+            // "TIPO" como substring, así que getValFuzzy() la encontraría primero y devolvería
+            // el combustible en vez del área operativa. Se lee la clave exacta: extraerHeaders()
+            // ya normaliza el encabezado real 1 a 1 ("TIPO" se queda "TIPO"), así que no hace
+            // falta fuzzy-match para este campo. Es un dato real y distinto de SECTOR — verificado
+            // contra la planilla: difieren en 927 de 4.412 filas (21%), no son la misma columna
+            // con dos nombres.
+            tipo: normalizeString((mapeo && mapeo.tipo && row[mapeo.tipo] !== undefined) ? row[mapeo.tipo] : row['TIPO']) || '',
+            sector: normalizeString(val(row, 'sector', ['SECTOR'], mapeo)) || '',
+            centro_costo: normalizeString(val(row, 'centro_costo', ['CENTRO DE COSTO', 'C. COSTO'], mapeo)) || '',
+            lugar_carga: normalizeString(val(row, 'lugar', ['LUGAR DE CARGA', 'LUGAR', 'SURTIDOR'], mapeo)) || ''
+        });
+    });
+    if (recs.length) await insertRawRecords(recs);
+    return recs.length;
+}
+
+async function handleGPS(filas, filename, desde, hasta, mapeo) {
+    const recs = [];
+    filas.forEach(row => {
+        const id = identidadDeFila(row, mapeo);
+        if (!id.interno && !id.dominio) return;
+
+        // El reporte trae dos columnas de tiempo (ralentí y movimiento) como fracción de día
+        // de Excel. aggregateHours() las suma y las convierte a horas reales.
+        const horas = aggregateHours({
+            ralenti: val(row, 'ralenti', ['TIEMPO EN RALENTI', 'RALENTI'], mapeo),
+            movimiento: val(row, 'movimiento', ['TIEMPO EN MOVIMIENTO', 'HORAS', 'HS'], mapeo),
+            parado: val(row, 'parado', ['TIEMPO PARADO', 'TIEMPO DETENIDO'], mapeo)
+        });
+
+        const fecha = parseDate(val(row, 'fecha', ['FECHA'], mapeo)) || desde || '';
+        recs.push({
+            ...baseMovimiento(row, id, fecha, filename),
+            type: 'gps',
+            type_label: 'Resumen de Flota (GPS)',
+            fecha_hasta: hasta || null,
+            distancia: parseNumber(val(row, 'km', ['KILOMETROS RECORRIDOS', 'KILOMETROS', 'DISTANCIA'], mapeo)),
+            horas,
+            grupo: normalizeString(val(row, 'grupo', ['GRUPO'], mapeo)) || ''
+        });
+    });
+    if (recs.length) await insertRawRecords(recs);
+    return recs.length;
+}
+
+/**
+ * Importador genérico: cubiertas, insumos, filtros y cualquier planilla futura.
+ * Guarda todas las columnas, detecta automáticamente la fecha y las columnas numéricas
+ * (para poder sumarlas), y cruza por interno o dominio contra el maestro.
+ */
+async function handleGenerico(filas, filename, det, mapeo) {
+    const recs = [];
+    filas.forEach(row => {
+        const id = identidadDeFila(row, mapeo);
+        if (!id.interno && !id.dominio) return;
+
+        const fecha = parseDate(val(row, 'fecha', ['FECHA', 'DATE', 'DIA'], mapeo)) || '';
+        const numericos = {};
+        Object.entries(row).forEach(([col, v]) => {
+            if (v === '' || v === null || v === undefined) return;
+            const n = typeof v === 'number' ? v : parseNumber(v);
+            // Solo se toma como métrica si el valor original era realmente numérico.
+            if (n !== 0 && (typeof v === 'number' || /^[\d.,\s$]+$/.test(String(v)))) {
+                numericos[slugCampo(col)] = n;
+            }
+        });
+
+        recs.push({
+            ...baseMovimiento(row, id, fecha, filename),
+            type: det.tipo,
+            type_label: det.etiqueta,
+            numericos,
+            ...(det.posibleDuplicadoCargas ? { _posible_duplicado_cargas: true } : {}),
+            ...(det.esResumenDerivable ? { _resumen_derivable: true } : {})
+        });
+    });
+    if (recs.length) await insertRawRecords(recs);
+    return recs.length;
+}
+
+/**
+ * Entregas de Loop: "Informe Entregas Loop" (detalle por remito, con volumen — puede venir
+ * repartido en varias hojas) y "Exportado informe de Viajes" (mismos remitos, con los horarios
+ * del viaje). Ver el comentario de detección en detectarFormato() y insertEntregasLoop() en
+ * database.js, que es donde se decide qué hacer cuando el mismo remito aparece más de una vez:
+ * si los datos comparables coinciden, se fusiona en un solo registro; si no coinciden, se
+ * guardan los dos y se marcan para revisión manual (nunca se "adivina" cuál es el correcto).
+ */
+async function handleEntregasLoop(filas, filename, formato, mapeo) {
+    const recs = [];
+    filas.forEach(row => {
+        // OJO: acá NO se puede usar identidadDeFila() genérica. "Informe Entregas Loop" trae
+        // "Código Interno" (nomenclatura propia de Loop, ej. "Indumovil 80") ADEMÁS de
+        // "Vehículo" (el código real de HSV, ej. "MX57") — y "Código Interno" matchea el
+        // candidato genérico 'INTERNO' antes de llegar a 'VEHICULO', así que identidadDeFila()
+        // devolvía "Indumovil 80" como interno. Como "Exportado informe de Viajes" no tiene
+        // columna "Código Interno", sus filas sí resolvían bien por "Vehículo" — y el mismo
+        // remito terminaba con dos "equipos" distintos entre los dos archivos, marcando como
+        // conflicto casi todos los cruces (9.401 de 11.733 en la primera prueba). Acá se
+        // clasifica el valor de "Vehículo" solo, ignorando cualquier otra columna de identidad.
+        const id = extraerIdentidad(getValFuzzy(row, ['VEHICULO']));
+        if (!id.interno && !id.dominio) return;
+
+        // getValFuzzy matchea por substring normalizado: 'REMITO' alcanza para "N˚ Remito"
+        // (Informe Entregas, con el símbolo de ordinal ˚) y para "Remitos" (Exportado de Viajes).
+        const remito = String(getValFuzzy(row, ['REMITO']) ?? '').trim();
+        if (!remito) return;
+
+        const fecha = parseDate(val(row, 'fecha', ['FECHA'], mapeo)) || '';
+        const volumen = formato === 'detalle' ? parseNumber(getValFuzzy(row, ['VOLUMEN'])) : null;
+
+        recs.push({
+            ...baseMovimiento(row, id, fecha, filename),
+            type: 'entrega',
+            type_label: 'Entregas (Loop)',
+            remito,
+            volumen: volumen || 0,
+            formato, // 'detalle' (Informe Entregas) | 'viaje' (Exportado informe de Viajes)
+            hoja: row.__hoja || null
+        });
+    });
+    if (!recs.length) return 0;
+    return await insertEntregasLoop(recs);
+}
+
+/**
+ * Resumen de viaje (formato vertical, un solo equipo, período completo sin desglose mensual).
+ * Wara lo genera por unidad con rango personalizado. Extrae km y ralentí del bloque clave-valor.
+ * Se guarda como un único registro con fecha=desde y fecha_hasta=hasta; el analyzer lo trata
+ * como dato de referencia (no entra en el cálculo mensual por falta de desglose por mes).
+ */
+async function handleGPSResumenViaje(rawRows, desde, hasta, unidad, filename) {
+    if (!unidad) return 0;
+    const kv = {};
+    rawRows.forEach(r => {
+        const k = normalizeString(r[0]);
+        if (k) kv[k] = r[1];
+    });
+    const km = parseNumber(kv['KILOMETROS RECORRIDOS']);
+    // Ambos tiempos vienen como fracción de día de Excel (igual que en el Resumen de Flota) y se
+    // pasan a horas (×24). Se extrae TAMBIÉN el movimiento (antes se descartaba con un comentario
+    // de "período de monitoreo" que la planilla misma contradice: su columna "Velocidad promedio"
+    // es km ÷ (movimiento × 24), y verificado contra el Resumen de Flota del mismo mes da el mismo
+    // valor en horas). Parado no viene en este reporte.
+    const ralenti = parseNumber(kv['TIEMPO EN RALENTI']) || 0;
+    const movimiento = parseNumber(kv['TIEMPO EN MOVIMIENTO']) || 0;
+    const horas = { ralenti: ralenti > 0 ? ralenti * 24 : 0, movimiento: movimiento > 0 ? movimiento * 24 : 0, parado: 0, total: 0 };
+    horas.total = horas.ralenti + horas.movimiento;
+    if (!km && !horas.total) return 0;
+    const id = { interno: unidad, interno_key: normalizeEquipoKey(unidad), dominio: '', dominio_key: '' };
+    const rec = {
+        ...baseMovimiento({}, id, desde || '', filename),
+        type: 'gps',
+        type_label: 'Resumen de viaje (GPS)',
+        fecha_hasta: hasta || null,
+        distancia: km || 0,
+        horas,
+        grupo: '',
+        es_resumen_periodo: true,
+        // Es el MISMO reporte que ya llega mensualmente en el "Resumen de Flota", solo que Wara lo
+        // emite por unidad en formato vertical. Se importa como comparativa: no vuelve a sumar km
+        // ni horas al análisis (lo excluye analyzer.js), y el diagnóstico (diagnostico.js) lo cruza
+        // contra el Resumen de Flota del mismo mes para avisar si algún dato cambió.
+        solo_comparativa: true
+    };
+    await insertRawRecords([rec]);
+    return 1;
+}
+
+async function handlePrecios(workbook, filename) {
+    const hoja = workbook.SheetNames.find(n => normalizeString(n).includes('PRECIO'));
+    if (!hoja) return;
+    try {
+        const rows = XLSX.utils.sheet_to_json(workbook.Sheets[hoja], { header: 1, defval: '' });
+        const precios = [];
+        for (let i = 1; i < rows.length; i++) {
+            const tipo = normalizeString(rows[i][0]);
+            const precio = parseNumber(rows[i][1]);
+            if (tipo && precio > 0) precios.push({ combustible: tipo, precio, source_file: filename });
+        }
+        if (precios.length) await insertPrecios(precios);
+    } catch (e) {
+        console.warn('No se pudo leer la hoja de Precios:', e);
+    }
+}

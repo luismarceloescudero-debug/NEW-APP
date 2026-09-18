@@ -1,0 +1,68 @@
+# Dependencies
+node_modules/
+.env
+.env.*
+!.env.example
+.vercel/
+coverage/
+dist/
+tools/invariantes.json
+tools/invariantes.local.json
+
+# Logs and temp files
+*.log
+matches*.txt
+out*.txt
+temp.js
+test_js*.js
+current_js.js
+localhost-*.log
+*.bak
+*_bak.xlsx
+*_Normalizado.xlsx
+*_CORREGIDO.xlsx
+FlotaControl_fixed.html
+FlotaControl_math_fixed.html
+
+# Never commit operational data. Test spreadsheets stay outside this repository.
+*.xlsx
+*.xls
+*.csv
+*.sqlite
+*.sqlite3
+*.db
+Cargas_Combustible_*.xlsx
+Consumos Estimados*.xlsx
+EQUIPOS PARA COTIZAR*.xlsx
+Equipos HSV*.xlsx
+Resumen de Flota*.xlsx
+Informe Entregas Loop*.xlsx
+Exportado informe de Viajes*.xlsx
+Informe Volumen entregado*.xlsx
+
+# Python
+__pycache__/
+*.pyc
+
+# Screenshots / temp images
+error_screenshot.png
+
+# Scratch / test artifacts  
+scratch/
+test_browser.js
+test_cm43.js
+
+# IDE / System
+.vscode/
+.idea/
+.claude/settings.local.json
+Thumbs.db
+.DS_Store
+
+# Antigravity agent artifacts
+implementation_plan.md
+
+# Copia temporal de las planillas reales para probar en el navegador (ver CLAUDE.md).
+# Nunca se commitea: son datos de flota.
+_datos_prueba/
+Informe de Viajes*.xlsx

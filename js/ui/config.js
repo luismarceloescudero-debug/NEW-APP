@@ -16,7 +16,7 @@ export function openConfigModal() {
             <div class="modal-content" style="max-width: 500px;">
                 <div class="modal-header">
                     <h2>Configuración del Sistema</h2>
-                    <button class="btn-close" onclick="this.closest('.modal-overlay').remove()"><i class="fa-solid fa-xmark"></i></button>
+                    <button class="btn-close" id="btn-cerrar-config"><i class="fa-solid fa-xmark"></i></button>
                 </div>
                 <div class="modal-body">
                     <div style="margin-bottom: 1.5rem;">
@@ -39,4 +39,7 @@ export function openConfigModal() {
     `;
 
     container.insertAdjacentHTML('beforeend', modalHTML);
+    document.getElementById('btn-cerrar-config')?.addEventListener('click', () => {
+        document.getElementById('config-modal')?.remove();
+    });
 }

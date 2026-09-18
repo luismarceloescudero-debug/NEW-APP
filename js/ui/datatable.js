@@ -2162,6 +2162,7 @@ export function initDataTableControls() {
     });
 
     document.getElementById('btn-historial-ediciones')?.addEventListener('click', () => abrirHistorialEdiciones());
+    document.getElementById('btn-exportar-tabla')?.addEventListener('click', () => exportarTablaVisible());
 
     document.getElementById('btn-ajustar-metas-estimados')?.addEventListener('click', () => {
         if (typeof window.abrirAjusteMetasDesdeTabla !== 'function') {

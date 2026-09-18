@@ -6,9 +6,12 @@
     "verificar:actualizar": "node tools/verificar-datos-reales.mjs --actualizar",
     "auditar": "node tools/auditar-calculos.mjs",
     "declarados": "node tools/auditar-declarados.mjs",
-    "probar": "npm run declarados && npm run verificar && npm run auditar"
+    "probar": "npm run declarados && npm run verificar && npm run auditar",
+    "vendor:fontawesome": "node tools/vendorizar-fontawesome.cjs",
+    "iconos:generar": "node tools/generar-iconos.cjs icons"
   },
   "devDependencies": {
+    "@fortawesome/fontawesome-free": "6.4.0",
     "fake-indexeddb": "^6.2.5"
   }
 }

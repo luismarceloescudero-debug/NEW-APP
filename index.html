@@ -4,10 +4,39 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>FlotaControl</title>
+    <meta name="description" content="Análisis local de consumo de combustible de la flota. Las planillas se procesan en este navegador; los datos no salen de esta computadora.">
+    <!--
+        CSP servida por <meta> porque GitHub Pages no permite headers propios (ver
+        docs/DEPLOYMENT.md). script-src sin 'unsafe-inline': el código no usa ningún
+        onclick="" ni <script> inline, así que no hace falta relajarlo. style-src sí lleva
+        'unsafe-inline' porque la app usa atributos style="" extensamente; connect-src incluye
+        127.0.0.1/localhost en cualquier puerto para que el asistente le pueda hablar a Ollama
+        (Fase 5) sin backend intermedio.
+    -->
+    <meta http-equiv="Content-Security-Policy" content="
+        default-src 'self';
+        script-src 'self';
+        style-src 'self' 'unsafe-inline';
+        font-src 'self';
+        img-src 'self';
+        connect-src 'self' http://127.0.0.1:* http://localhost:* https://127.0.0.1:* https://localhost:*;
+        object-src 'none';
+        base-uri 'self';
+        form-action 'self';
+    ">
+    <!-- frame-ancestors no se puede fijar por <meta> (solo por header HTTP); GitHub Pages no
+         permite headers propios, así que esa protección queda fuera de alcance acá. -->
+    <meta name="theme-color" content="#0a0e1a">
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="icon" href="icons/favicon-32.png" type="image/png">
+    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
     <!-- SheetJS local: si se cargara desde un CDN y este falla, la app no puede leer
          ni un solo archivo ("XLSX is not defined"). El archivo ya vive en el repo. -->
     <script src="xlsx.full.min.js"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Font Awesome vendorizado (Fase 4): antes venía de cdnjs. Sin CDN externo, la app
+         funciona sin conexión y no depende de que ese servidor esté disponible. -->
+    <link rel="stylesheet" href="vendor/fontawesome/css/fontawesome.min.css">
+    <link rel="stylesheet" href="vendor/fontawesome/css/solid.min.css">
     <link rel="stylesheet" href="styles/main.css">
     <link rel="stylesheet" href="styles/upload.css">
     <link rel="stylesheet" href="styles/components.css">
@@ -31,6 +60,7 @@
                 <i class="fa-solid fa-rotate"></i><span class="btn-label">Re-analizar</span>
             </button>
             <button id="btn-backup" class="btn-icon" title="Backup y restauración"><i class="fa-solid fa-box-archive"></i></button>
+            <button id="btn-aviso-datos" class="btn-icon" title="¿Dónde quedan mis datos?"><i class="fa-solid fa-shield-halved"></i></button>
             <button id="btn-config" class="btn-icon" title="Configuración"><i class="fa-solid fa-gear"></i></button>
         </div>
     </header>
@@ -48,7 +78,7 @@
                     <strong>Movimientos:</strong> Cargas de Combustible · Resumen de Flota (GPS) · cubiertas, insumos, filtros y cualquier otra planilla que tenga interno o dominio
                 </p>
                 <input type="file" id="file-input" multiple accept=".xlsx, .xls, .csv" hidden>
-                <button class="btn-primary" onclick="document.getElementById('file-input').click()">Seleccionar Archivos</button>
+                <button id="btn-seleccionar-archivos" class="btn-primary">Seleccionar Archivos</button>
             </div>
 
             <div id="file-list" class="file-list"></div>
@@ -149,7 +179,7 @@
                     <button id="btn-add-col" class="btn-secondary btn-sm"><i class="fa-solid fa-plus"></i> Columna</button>
                     <button id="btn-add-row" class="btn-secondary btn-sm"><i class="fa-solid fa-plus"></i> Equipo</button>
                     <button id="btn-historial-ediciones" class="btn-secondary btn-sm" title="Ver el historial de ediciones manuales"><i class="fa-solid fa-clock-rotate-left"></i> Historial</button>
-                    <button class="btn-secondary btn-sm" onclick="window.exportTableToXLSX()"><i class="fa-solid fa-file-excel"></i> Exportar</button>
+                    <button id="btn-exportar-tabla" class="btn-secondary btn-sm"><i class="fa-solid fa-file-excel"></i> Exportar</button>
                 </div>
             </div>
 

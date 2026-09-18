@@ -4,11 +4,12 @@
 import { initDB, clearAllData, clearMovimientos, getDBStats } from './data/database.js';
 import { initUploadUI, renderDBStatus } from './ui/upload.js';
 import { renderPanel, initPanelControls, buscarEquipo, setMesesFiltro } from './ui/panel.js';
-import { renderDataTable, initDataTableControls, exportarTablaVisible, abrirTablaConBusqueda } from './ui/datatable.js';
+import { renderDataTable, initDataTableControls, abrirTablaConBusqueda } from './ui/datatable.js';
 import { renderSeguimiento } from './ui/seguimiento.js';
 import { initCalcPopover } from './ui/calcpopover.js';
 import { openConfigModal } from './ui/config.js';
 import { openBackupModal } from './ui/backup.js';
+import { openAvisoDatosLocalesModal, yaVioElAviso } from './ui/aviso.js';
 import { initAIChat } from './ai/chat.js';
 
 export const AppState = {
@@ -40,9 +41,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     document.getElementById('btn-config')?.addEventListener('click', openConfigModal);
     document.getElementById('btn-backup')?.addEventListener('click', openBackupModal);
+    document.getElementById('btn-aviso-datos')?.addEventListener('click', openAvisoDatosLocalesModal);
     document.getElementById('btn-reanalizar')?.addEventListener('click', reanalizar);
 
-    window.exportTableToXLSX = exportarTablaVisible;
     window.showDataTable = (t) => { irA('datos'); renderDataTable(t); };
     window.renderPanel = renderPanel;
     window.setMesesFiltro = setMesesFiltro;
@@ -72,7 +73,20 @@ document.addEventListener('DOMContentLoaded', async () => {
         const s = await getDBStats();
         irA(s.equipos > 0 ? 'panel' : 'upload');
     } catch (e) { irA('upload'); }
+
+    if (!yaVioElAviso()) openAvisoDatosLocalesModal();
 });
+
+// Service worker (Fase 4, PWA): registrar después de que la página cargó del todo, para no
+// competir por ancho de banda/CPU con el primer render. Si falla (navegador sin soporte,
+// servido desde file://) la app sigue funcionando igual, solo sin caché offline.
+if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js').catch((e) => {
+            console.warn('No se pudo registrar el service worker (la app funciona igual, sin caché offline):', e);
+        });
+    });
+}
 
 /**
  * Re-analizar: da a elegir entre borrar solo los movimientos (conservando el padrón y las

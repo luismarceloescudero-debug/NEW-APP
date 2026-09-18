@@ -37,6 +37,7 @@ export function initUploadUI() {
     dropZone.addEventListener('drop', (e) => handleFiles(e.dataTransfer.files), false);
     fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
     btnProcess.addEventListener('click', processAllFiles);
+    document.getElementById('btn-seleccionar-archivos')?.addEventListener('click', () => fileInput.click());
 
     // Delegado en vez de onclick inline con el nombre del archivo interpolado en el HTML
     // (eso era el punto inseguro: un nombre de archivo con comillas rompía el atributo).

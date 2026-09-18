@@ -53,7 +53,7 @@ export function openBackupModal() {
             <div class="modal-content" style="max-width: 560px;">
                 <div class="modal-header">
                     <h2><i class="fa-solid fa-box-archive"></i> Backup y restauración</h2>
-                    <button class="btn-close" onclick="this.closest('.modal-overlay').remove()"><i class="fa-solid fa-xmark"></i></button>
+                    <button class="btn-close" id="btn-cerrar-backup"><i class="fa-solid fa-xmark"></i></button>
                 </div>
                 <div class="modal-body">
 
@@ -101,6 +101,9 @@ export function openBackupModal() {
     `;
 
     container.insertAdjacentHTML('beforeend', modalHTML);
+    document.getElementById('btn-cerrar-backup')?.addEventListener('click', () => {
+        document.getElementById('backup-modal')?.remove();
+    });
     wireExportar();
     wireRestaurar();
 }

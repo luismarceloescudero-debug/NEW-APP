@@ -30,8 +30,8 @@ jobs:
       - name: Prepare static artifact
         run: |
           mkdir dist
-          cp index.html xlsx.full.min.js .nojekyll dist/
-          cp -r js styles dist/
+          cp index.html xlsx.full.min.js manifest.webmanifest sw.js .nojekyll dist/
+          cp -r js styles vendor icons dist/
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

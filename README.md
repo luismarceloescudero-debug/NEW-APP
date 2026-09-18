@@ -55,6 +55,17 @@ detalle con el desglose del cálculo, las últimas cargas y la actividad GPS.
 listo para reprocesar. Es necesario cuando quedaron datos de una versión anterior de la app,
 porque reprocesar sin limpiar duplicaría litros, km y horas.
 
+## Instalar y usar sin conexión
+
+FlotaControl es una PWA (Progressive Web App): el navegador ofrece "Instalar" o "Agregar a
+pantalla de inicio" (el ícono suele aparecer en la barra de direcciones). Una vez instalada:
+
+- Abre en su propia ventana, como una aplicación.
+- Funciona sin internet después de la primera visita (`sw.js` cachea el frontend).
+- Se actualiza sola la próxima vez que se abre con conexión.
+
+No es necesario instalarla para usarla: abrir la URL en el navegador funciona igual.
+
 ## Desarrollo local
 
 `index.html` carga los módulos como ES modules, así que **no funciona abriéndolo con doble
@@ -128,19 +139,22 @@ incluyendo cómo habilitar Ollama contra un sitio publicado, en `docs/DEPLOYMENT
 ## Estructura
 
 ```
-index.html              Página única (Carga de Datos + Panel de Flota)
+index.html               Página única (Carga de Datos + Panel de Flota)
 manifest.webmanifest     Metadatos de instalación (PWA)
 sw.js                    Service worker: caché para uso sin conexión
 xlsx.full.min.js         SheetJS, servido localmente (no desde CDN)
-js/app.js                Arranque, navegación, botón Re-analizar
+vendor/fontawesome/      Font Awesome vendorizado (no desde CDN) — ver tools/vendorizar-fontawesome.cjs
+icons/                   Íconos de la PWA — ver tools/generar-iconos.cjs
+js/app.js                Arranque, navegación, botón Re-analizar, registro del service worker
 js/data/normalizer.js    Normalización, denominaciones, parseo de horas y metas
 js/data/analyzer.js      Reglas de negocio y análisis de toda la flota
-js/data/database.js      IndexedDB
+js/data/database.js      IndexedDB + backup/restauración (exportarBackup/importarBackup)
 js/parsers/              Detección de formato y extracción de cada planilla
 js/ui/panel.js           Panel unificado (KPIs + tarjetas editables)
 js/ui/datatable.js       Visor/editor de tablas
 js/ui/modals.js          Detalle por equipo
-js/ui/backup.js          Exportar/restaurar los datos guardados en el navegador
+js/ui/backup.js          Modal de backup y restauración
+js/ui/aviso.js           Aviso de "tus datos quedan en esta computadora"
 js/ai/chat.js            Cliente del asistente (UI, resumen de contexto)
 js/ai/ollama.js          Adaptador de Ollama (fetch directo, sin backend)
 extras/remote-chat/      Backend remoto (Claude/Anthropic) documentado, sin desplegar

@@ -777,19 +777,7 @@ function renderKPIs(el, t, fuentes) {
                 <span class="kpi-calc"><i class="fa-solid fa-calculator"></i> ver cálculo</span>
             </div>
         </div>
-        <select id="selector-periodo" class="selector-periodo" onchange="cambiarPeriodo(this.value)">
-            <option value="ultimo-mes">Último mes</option>
-            <option value="3-meses">Últimos 3 meses</option>
-            <option value="6-meses">Últimos 6 meses</option>
-            <option value="12-meses">Últimos 12 meses</option>
-        </select>
-<select id="selector-consumo" class="selector-consumo" onchange="actualizarConsumo(this.value)">
-        <option value="l_h">L/Hora</option>
-        <option value="l_100km">L/100KM</option>
-    </select>
-    <button id="btn-generar-md" class="btn btn-secondary" onclick="generarMD()"><i class="fa-solid fa-file-markdown"></i> Generar historial .MD</button>
-
-    <div class="kpi-grid">
+        <div class="kpi-grid">
             ${kpi({ id: 'kpi-litros', label: 'Combustible', valor: `${nf(t.total_litros)} <small>L</small>`, sub: `${nf(t.cantidad_cargas)} cargas registradas`, titulo: 'Combustible total del período', pasos: t.pasos.litros,
                 acciones: [
                     { texto: 'Ver cargas de combustible', icono: 'fa-gas-pump', primaria: true, onClick: () => window.abrirTablaConBusqueda?.('carga', '') },

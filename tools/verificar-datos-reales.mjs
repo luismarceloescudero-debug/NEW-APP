@@ -145,7 +145,18 @@ async function main() {
         hallazgos_generados: hallazgos.length,
         hallazgos_por_id: Object.fromEntries(hallazgos.map(h => [h.id, (hallazgos.filter(x => x.id === h.id).length)])),
         autocorreccion: { altas_interno: aplicado.altas, aceptados_no_flota: aplicado.aceptados, metas_alineadas: aplicado.metas },
-        huerfanos_restantes: analisis.totales.huerfanos.length
+        huerfanos_restantes: analisis.totales.huerfanos.length,
+        // Los KPIs que muestra el panel. Se miden aparte de las cargas crudas porque un error puede
+        // inflarlos sin mover una sola fila (pasó el 17/09/2026: un bloque pegado al final de
+        // analizarFlota volvía a sumar los litros, km y horas de todas las tarjetas a los totales).
+        panel: {
+            periodo_desde: analisis.totales.periodo_desde,
+            periodo_hasta: analisis.totales.periodo_hasta,
+            total_litros: num(analisis.totales.total_litros || 0),
+            total_km: num(analisis.totales.total_km || 0),
+            total_horas: num(analisis.totales.total_horas || 0),
+            sobre_meta: analisis.totales.sobre_meta || 0
+        }
     };
 
     console.log('\n=== REPORTE DE FUENTES ===');
@@ -160,6 +171,22 @@ async function main() {
     console.log(`Duplicados exactos detectados y excluidos automáticamente: ${medido.duplicados_exactos_detectados}`);
     console.log(`Diagnóstico: ${medido.equipos_analizados} equipos analizados, ${medido.hallazgos_generados} hallazgos generados`);
     console.log(`Autocorrección: ${medido.autocorreccion.altas_interno} interno(s) nuevo(s) dado(s) de alta · ${medido.autocorreccion.aceptados_no_flota} código(s) aceptado(s) automáticamente · ${medido.autocorreccion.metas_alineadas} meta(s) alineada(s) al real · ${medido.huerfanos_restantes} huérfanos siguen para revisión manual (patente sin interno)`);
+
+    console.log(`Panel: ${medido.panel.periodo_desde} → ${medido.panel.periodo_hasta} · ${medido.panel.total_litros.toLocaleString('es-AR')} L · ${medido.panel.total_km.toLocaleString('es-AR')} km · ${medido.panel.total_horas.toLocaleString('es-AR')} hs · ${medido.panel.sobre_meta} sobre meta`);
+
+    // Coherencia interna, sin referencia: corre antes de --actualizar para que un total inflado
+    // nunca quede congelado como esperado. El KPI de litros sale de las cargas del período, así que
+    // no puede superar el total de cargas; y las tarjetas no pueden sumar más que el KPI (la
+    // diferencia son los huérfanos, que suman al KPI pero no a ninguna tarjeta).
+    const sumaTarjetas = num(analisis.filas.reduce((s, f) => s + (f.metrics?.total_litros || 0), 0));
+    const incoherencias = [];
+    if (medido.panel.total_litros > litrosTotales + 1) incoherencias.push(`el KPI de litros (${medido.panel.total_litros}) supera el total de cargas (${litrosTotales})`);
+    if (sumaTarjetas > medido.panel.total_litros + 1) incoherencias.push(`las tarjetas suman ${sumaTarjetas} L, más que el KPI de litros (${medido.panel.total_litros})`);
+    if (incoherencias.length) {
+        console.error('\nINCOHERENCIA EN LOS TOTALES DEL PANEL:');
+        incoherencias.forEach(i => console.error('  - ' + i));
+        process.exit(1);
+    }
 
     if (ACTUALIZAR) {
         writeFileSync(INVARIANTES_PATH, JSON.stringify(medido, null, 2) + '\n');
@@ -195,6 +222,14 @@ async function main() {
     checar('códigos aceptados automáticamente', medido.autocorreccion.aceptados_no_flota, esperado.autocorreccion.aceptados_no_flota);
     checar('metas alineadas automáticamente', medido.autocorreccion.metas_alineadas, esperado.autocorreccion.metas_alineadas);
     checar('huérfanos restantes (patente sin interno)', medido.huerfanos_restantes, esperado.huerfanos_restantes);
+    if (esperado.panel) {
+        checar('KPI litros del panel', medido.panel.total_litros, esperado.panel.total_litros, 1);
+        checar('KPI km del panel', medido.panel.total_km, esperado.panel.total_km, 1);
+        checar('KPI horas del panel', medido.panel.total_horas, esperado.panel.total_horas, 0.5);
+        checar('equipos sobre meta', medido.panel.sobre_meta, esperado.panel.sobre_meta);
+    } else {
+        console.log('(la referencia no tiene KPIs del panel: regenerala con --actualizar para controlarlos)');
+    }
 
     if (fallas.length) {
         console.error('\nFALLÓ LA VERIFICACIÓN:');

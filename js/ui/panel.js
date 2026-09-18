@@ -155,45 +155,6 @@ export function datosParaSeguimiento() {
     if (!ultimoAnalisis) return null;
     const rawRecords = datosCrudos?.rawRecords || [];
     const hallazgos = generarDiagnostico(ultimoAnalisis.filas, ultimoAnalisis.totales, rawRecords, ralentiEstadosCache, noFlotaAceptadosCache, equiposExcluidosCache, extraDiag());
-
-// ----- Regla: equipos que NO deben tener ralentí (para reclamo GPS) -----
-const equiposSinRalentí = [
-  { patrón: /^CM/, nombre: 'Camioneta', mensaje: 'Equipo tipo camioneta; el ralentí no es su función principal.' },
-  { Patrón: /^CH\d{3}PW$/, nombre: 'Camión con brazo grúa', mensaje: 'Tiene brazo de grúa; el ralentí no justifica operación. Revisar GPS.' },
-  { Patrón: /^VL11$/, nombre: 'Volcador aridos', mensaje: 'Volcador de aridos; no trabaja con ralentí.' },
-  { Patrón: /^OJV377$/, nombre: 'Volcador herramientas', mensaje: 'Pedido de la industria/ferretería; sin ralentí.' },
-  { Patrón: /^GE/, nombre: 'Grupo electrógeno', mensaje: 'Generador fijo; el ralentí es su trabajo, revisar dato GPS.' }
-];
-const hallazgoSinRalentí = {
-  id: 'reclamo_sin_ralenti',
-  severidad: 'media',
-  icono: 'fa-satellite-dish',
-  no_comparar: true,
-  titulo: 'Equipos sin ralentí detectados',
-  detalle: '',
-  equipos: []
-};
-const existente = hallazgos.find(h => h.id === hallazgoSinRalentí.id);
-if (existente) hallazgos.splice(hallazgos.indexOf(existente), 1);
-// Reconstruir la lista por cada análisis
-const filas = ultimoAnalisis?.filas || [];
-const vistas = new Set();
-hallazgoSinRalentí.equipos = filas.filter(f => {
-  const interno = f.equipo?.interno;
-  if (!interno) return false;
-  // Verificar patrones
-  let match = null;
-  for (const e of equiposSinRalentí) {
-    if (e.patrón.test(interno)) { match = e; break; }
-  }
-  if (!match) return false;
-  if (vistas.has(interno)) return false;
-  vistas.add(interno);
-  return { interno, denominacion: f.equipo?.denominacion || '', texto: `${interno} – ${match.nombre}`, sub: match.mensaje };
-});
-if (hallazgoSinRalentí.equipos.length) {
-  hallazgos.push(hallazgoSinRalentí);
-}
     return { analisis: ultimoAnalisis, rawRecords, hallazgos };
 }
 
@@ -5552,20 +5513,6 @@ export function initPanelControls() {
 
     if (!document.getElementById('denominaciones-list')) {
         const dl = document.createElement('datalist');
-function generarMD() {
-  const historial = JSON.parse(localStorage.getItem("flotaHistorial") || "{}");
-  let md = "# Historial de Consumo y Modificaciones\n";
-  Object.entries(historial).forEach(([interno, datos]) => {
-    md += `- **${interno}**\n    - Litros: ${datos.litros}\n    - KM: ${datos.km}\n    - Horas: ${datos.horas}\n    - Consumo: ${datos.consumo} L/h\n`;
-  });
-  const blob = new Blob([md], { type: "text/markdown" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "historial-consumo.md";
-  a.click();
-  URL.revokeObjectURL(url);
-}
         dl.id = 'denominaciones-list';
         dl.innerHTML = Object.values(TIPO_POR_PREFIJO).map(v => `<option value="${v}">`).join('');
         document.body.appendChild(dl);

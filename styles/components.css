@@ -279,3 +279,44 @@ input[type="date"]::-webkit-calendar-picker-indicator {
     padding: 0.25rem 0.5rem;
     border-radius: 4px;
 }
+
+/* ============================================================ */
+/* BACKUP Y RESTAURACIÓN (Fase 3)                                */
+/* ============================================================ */
+
+.backup-section {
+    margin-bottom: 1.5rem;
+    padding-bottom: 1.5rem;
+    border-bottom: 1px solid var(--border-color);
+}
+.backup-section:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+.backup-section h3 {
+    display: flex; align-items: center; gap: 0.5rem;
+    font-size: 0.95rem; margin-bottom: 0.6rem; color: var(--text-primary);
+}
+.backup-desc { font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.75rem; line-height: 1.5; }
+.backup-info { font-size: 0.9rem; color: var(--text-primary); margin-bottom: 0.25rem; }
+.backup-muted { font-size: 0.8rem; color: var(--text-muted); }
+.backup-muted.backup-warn { color: var(--accent-amber); }
+.backup-checkbox {
+    display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem;
+    color: var(--text-secondary); margin-bottom: 0.75rem; cursor: pointer;
+}
+.backup-result { margin-top: 0.6rem; font-size: 0.85rem; }
+.backup-ok { color: var(--accent-green); }
+.backup-error { color: var(--accent-red); }
+.backup-dropzone {
+    border: 2px dashed var(--border-color); border-radius: 10px; padding: 1.5rem;
+    text-align: center; color: var(--text-muted); margin-bottom: 0.75rem; cursor: pointer;
+    transition: var(--transition-fast);
+    display: flex; flex-direction: column; align-items: center; gap: 0.5rem;
+}
+.backup-dropzone:hover, .backup-dropzone-active {
+    border-color: var(--accent-blue); color: var(--text-secondary); background: var(--bg-card-hover);
+}
+.backup-dropzone i { font-size: 1.5rem; }
+.backup-warning {
+    display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; color: var(--accent-amber);
+    background: rgba(245, 158, 11, 0.08); border-radius: 8px; padding: 0.6rem 0.75rem;
+    margin-bottom: 0.75rem;
+}

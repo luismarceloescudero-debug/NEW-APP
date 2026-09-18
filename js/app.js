@@ -8,6 +8,7 @@ import { renderDataTable, initDataTableControls, exportarTablaVisible, abrirTabl
 import { renderSeguimiento } from './ui/seguimiento.js';
 import { initCalcPopover } from './ui/calcpopover.js';
 import { openConfigModal } from './ui/config.js';
+import { openBackupModal } from './ui/backup.js';
 import { initAIChat } from './ai/chat.js';
 
 export const AppState = {
@@ -38,6 +39,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     initAIChat();
 
     document.getElementById('btn-config')?.addEventListener('click', openConfigModal);
+    document.getElementById('btn-backup')?.addEventListener('click', openBackupModal);
     document.getElementById('btn-reanalizar')?.addEventListener('click', reanalizar);
 
     window.exportTableToXLSX = exportarTablaVisible;

@@ -910,6 +910,107 @@ export function clearAllData() {
     );
 }
 
+// ============================ BACKUP Y RESTAURACIÓN (Fase 3) ============================
+
+// El maestro y las correcciones NUNCA se borran solos (ver clearMovimientos() más arriba):
+// son lo único que de verdad hay que resguardar. `raw_records`/`files_meta` son movimientos
+// de sesión — se limpian solos al reabrir la app — así que un backup normal no los necesita;
+// se incluyen aparte solo si el usuario los pide explícitamente (por ejemplo, para llevar a
+// otra computadora lo que ya está cargado hoy sin volver a subir los Excel).
+const STORES_PERSISTENTES = [
+    'equipos', 'estimados', 'precios', 'mapeos', 'config',
+    'correccionesCargas', 'disponibilidad', 'edicionesLog', 'ralentiEstados', 'reclamosGPS',
+    'noFlotaAceptados', 'equiposExcluidos', 'prefijosNoFlota', 'seguimientoEquipos',
+    'actividadEstimada', 'accionesAutomaticas', 'referentesMeta'
+];
+const STORES_MOVIMIENTOS = ['raw_records', 'files_meta'];
+export const BACKUP_FORMAT_VERSION = 1;
+
+/**
+ * Arma el objeto de backup: { formatVersion, dbVersion, appVersion, exportedAt, stores }.
+ * `stores` es { nombreDeStore: [fila, fila, ...] } — un volcado directo de getAll() por store,
+ * sin transformar nada, para que restaurar sea un put() fila por fila.
+ */
+export async function exportarBackup({ incluirMovimientos = false, appVersion = 'dev' } = {}) {
+    const nombres = incluirMovimientos ? [...STORES_PERSISTENTES, ...STORES_MOVIMIENTOS] : STORES_PERSISTENTES;
+    const stores = {};
+    for (const nombre of nombres) stores[nombre] = await readAll(nombre);
+    return {
+        formatVersion: BACKUP_FORMAT_VERSION,
+        dbVersion: DB_VERSION,
+        appVersion,
+        exportedAt: new Date().toISOString(),
+        incluyeMovimientos: incluirMovimientos,
+        stores
+    };
+}
+
+/**
+ * Valida la forma del backup ANTES de tocar cualquier dato. No es exhaustivo (no valida cada
+ * fila), pero atrapa los errores más comunes: archivo equivocado, versión futura, formato roto.
+ */
+export function validarBackup(data) {
+    const errores = [];
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        errores.push('El archivo no tiene la forma de un backup de FlotaControl (no es un objeto JSON).');
+        return errores;
+    }
+    if (data.formatVersion !== BACKUP_FORMAT_VERSION) {
+        errores.push(`Versión de formato de backup no soportada: ${data.formatVersion ?? 'sin especificar'} (esta app soporta ${BACKUP_FORMAT_VERSION}).`);
+    }
+    if (!data.stores || typeof data.stores !== 'object' || Array.isArray(data.stores)) {
+        errores.push('Falta la sección "stores" del backup, o no tiene el formato esperado.');
+    }
+    if (!Number.isFinite(data.dbVersion)) {
+        errores.push('El backup no indica de qué versión de base de datos viene.');
+    } else if (data.dbVersion > DB_VERSION) {
+        errores.push(`El backup es de una versión más nueva de la app (base de datos v${data.dbVersion}) que esta instalación (v${DB_VERSION}). Actualizá la app antes de restaurar.`);
+    }
+    return errores;
+}
+
+/**
+ * Reemplaza el contenido de los stores presentes en el backup por lo que trae el archivo.
+ * Transaccional por store incluido (clear + put dentro de la misma transacción de IndexedDB):
+ * si algo falla a mitad de camino, esa transacción no queda a medias — pero no es atómico
+ * ENTRE stores (una `writeTx` con todos los nombres a la vez lo sería; se prefiere así para
+ * poder reportar cuántas filas entraron por store incluso si alguno falla).
+ *
+ * Un store que el backup no trae queda intacto (no se borra): un backup viejo sin
+ * `referentesMeta`, por ejemplo, no debe borrar los referentes ya elegidos en esta instalación.
+ * Un store que el backup trae pero esta versión de la app no reconoce se ignora, con aviso.
+ */
+export async function importarBackup(data) {
+    const errores = validarBackup(data);
+    if (errores.length) throw new Error(errores.join(' '));
+
+    const nombresValidos = new Set([...getDB().objectStoreNames]);
+    const nombresBackup = Object.keys(data.stores);
+    const aRestaurar = nombresBackup.filter(n => nombresValidos.has(n));
+    const ignorados = nombresBackup.filter(n => !nombresValidos.has(n));
+
+    if (!aRestaurar.length) {
+        throw new Error('El backup no tiene ningún store reconocido por esta versión de la app.');
+    }
+
+    const resumen = {};
+    for (const nombre of aRestaurar) {
+        const filas = Array.isArray(data.stores[nombre]) ? data.stores[nombre] : [];
+        await writeTx([nombre], ([store]) => {
+            store.clear();
+            filas.forEach(fila => store.put(fila));
+        });
+        resumen[nombre] = filas.length;
+    }
+
+    return {
+        storesRestaurados: aRestaurar,
+        storesIgnorados: ignorados,
+        totalFilas: Object.values(resumen).reduce((s, n) => s + n, 0),
+        porStore: resumen
+    };
+}
+
 export async function getDBStats() {
     const [equipos, records, archivos, cols] = await Promise.all([
         getAllEquipos(), getAllRawRecords(), getArchivosProcesados(), getColumnasExtra()

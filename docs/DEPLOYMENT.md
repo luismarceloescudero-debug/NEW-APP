@@ -54,8 +54,10 @@ FlotaControl no necesita IA para funcionar: cargar planillas, calcular consumos 
 funciona igual sin ningún proveedor configurado. Cuando se quiere usar el asistente:
 
 1. Instalar Ollama desde [ollama.com](https://ollama.com).
-2. Descargar un modelo, por ejemplo `ollama pull qwen2.5:7b` (necesita soportar *tool calling*;
-   ver `js/ai/ollama.js` para la lista verificada).
+2. Descargar un modelo, por ejemplo `ollama pull qwen2.5:7b`. Tiene que soportar *tool calling*
+   (function calling) en la API de Ollama — la mayoría de los modelos actuales de tamaño medio
+   lo soportan (familias Qwen 2.5+, Llama 3.1+, Mistral); si el modelo no lo soporta, el
+   asistente puede no usar `get_equipo_detalle` para equipos fuera del resumen inicial.
 3. Permitir que Ollama acepte pedidos desde el origen donde está publicada la app. Por
    defecto Ollama solo acepta `localhost`; si la app está en GitHub Pages hay que agregar su
    origen a `OLLAMA_ORIGINS` **antes de iniciar el servicio de Ollama**:

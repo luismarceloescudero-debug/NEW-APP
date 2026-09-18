@@ -7,10 +7,10 @@
  * sigue disponible en extras/remote-chat/ por si se reactiva más adelante con autenticación
  * real (ver ese README).
  *
- * FASE 5 (pendiente): el asistente va a hablarle directo a Ollama, corriendo en la misma
- * computadora (http://127.0.0.1:11434), sin backend ni API key. Hasta entonces esta vista
- * informa "IA no configurada" y el resto de la app funciona igual — la IA nunca fue requisito
- * para analizar la flota.
+ * FASE 5 (18/09/2026): el asistente le habla DIRECTO a Ollama (js/ai/ollama.js), corriendo en
+ * la misma computadora. Sin backend, sin API key, sin enviar datos de la flota a ningún
+ * servidor. No hay búsqueda web (un modelo local no sale a internet por su cuenta): la única
+ * tool es `get_equipo_detalle`, resuelta contra el IndexedDB local.
  */
 import { getAllEquipos, getAllRawRecords, getAllEstimados } from '../data/database.js';
 import {
@@ -24,28 +24,51 @@ import {
     getGPSForEquipo
 } from '../data/analyzer.js';
 import { normalizeEquipoKey } from '../data/normalizer.js';
+import { isAvailable, listModels, chat as ollamaChat, getOllamaConfig, setOllamaConfig } from './ollama.js';
 
 const MAX_TURNS = 16; // mensajes (usuario+asistente, incluye idas y vueltas de tools) en memoria
 // Subido de 4 a 8 (2026-08-27): un pedido que toca varios equipos a la vez (ej. "investigar
-// y ajustar metas" sobre 10 equipos) necesita una ronda de tool_use por cada consulta de
+// y ajustar metas" sobre 10 equipos) necesita una ronda de tool-use por cada consulta de
 // detalle, y con 4 se cortaba a mitad de camino sin llegar nunca a la respuesta final —
 // el usuario veía "el asistente no devolvió una respuesta de texto" aunque en realidad
 // estaba a mitad de investigar, no roto.
-const MAX_TOOL_ROUNDS = 8; // tope de vueltas tool_use/tool_result por mensaje del usuario, para no loopear sin fin
+const MAX_TOOL_ROUNDS = 8; // tope de vueltas tool_calls/tool por mensaje del usuario, para no loopear sin fin
 
-// Historial de la conversación en memoria. Cada item es { role, content } donde `content`
-// puede ser un string (turno de texto simple) o un array de bloques (tool_use/tool_result/
-// texto con citas), tal como los define la Messages API de Anthropic.
-// No se persiste nada del chat en localStorage/IndexedDB: se pierde al recargar la página,
-// a propósito (privacidad).
+const TOOL_GET_EQUIPO_DETALLE = {
+    type: 'function',
+    function: {
+        name: 'get_equipo_detalle',
+        description: 'Devuelve el detalle completo de UN equipo de la flota por su código interno: ' +
+            'litros, km, horas, consumo real, meta y últimas cargas. Usar cuando se pregunte por un ' +
+            'equipo específico que no esté en el resumen inicial (el resumen solo trae el top 10 por litros).',
+        parameters: {
+            type: 'object',
+            properties: {
+                interno: { type: 'string', description: 'Código interno del equipo, por ejemplo "TR20" o "CM43".' }
+            },
+            required: ['interno']
+        }
+    }
+};
+
+// Historial de la conversación en memoria: [{ role: 'user'|'assistant'|'tool', content, tool_calls? }],
+// formato nativo de Ollama. No incluye el resumen de la flota (se recalcula y se antepone como
+// mensaje "system" en cada llamada, dentro de sendMessage() — así siempre refleja los datos
+// actuales, no una foto del momento en que arrancó la conversación).
+// No se persiste nada del chat en localStorage/IndexedDB: se pierde al recargar la página, a
+// propósito (privacidad).
 let conversation = [];
 
 export function initAIChat() {
     const input = document.getElementById('ai-input');
     const btnSend = document.getElementById('btn-send-ai');
     const history = document.getElementById('ai-chat-history');
+    const badge = document.getElementById('ai-status-badge');
 
     if (!input || !btnSend || !history) return;
+
+    actualizarBadge(badge, 'checking');
+    verificarDisponibilidad().then(disponible => actualizarBadge(badge, disponible ? 'ok' : 'muted'));
 
     const appendMsg = (role, html) => {
         const div = document.createElement('div');
@@ -69,15 +92,95 @@ export function initAIChat() {
         if (!text || btnSend.disabled) return;
 
         appendMsg('user', escapeHtml(text));
-        conversation.push({ role: 'user', content: text });
-        conversation = conversation.slice(-MAX_TURNS);
         if (presetText == null) input.value = '';
 
-        const status = appendMsg('system', '<i class="fa-solid fa-circle-info"></i> IA no configurada.');
-        // FASE 1: sin backend remoto. FASE 5 (pendiente) conecta esto a Ollama local — ver el
-        // comentario de arriba de archivo. buildContextSummary() y resolveEquipoDetalleTool()
-        // quedan implementadas y probadas para que esa fase solo tenga que cablear el proveedor.
-        setStatus(status, '<i class="fa-solid fa-circle-info"></i> IA no configurada todavía en este release. El resto de la app (carga, cálculo, panel) funciona igual sin ella.');
+        const status = appendMsg('system', '<i class="fa-solid fa-spinner fa-spin"></i> Pensando...');
+        btnSend.disabled = true;
+        input.disabled = true;
+
+        try {
+            const disponible = await verificarDisponibilidad();
+            actualizarBadge(badge, disponible ? 'ok' : 'muted');
+            if (!disponible) {
+                setStatus(status, mensajeNoDisponible());
+                return;
+            }
+
+            let { model } = getOllamaConfig();
+            if (!model) {
+                const modelos = await listModels().catch(() => []);
+                if (!modelos.length) {
+                    setStatus(status,
+                        '<i class="fa-solid fa-circle-info"></i> Ollama está corriendo pero no tiene ningún modelo descargado. ' +
+                        'Ejecutá <code>ollama pull qwen2.5:7b</code> (o el modelo que prefieras) y volvé a intentar.');
+                    return;
+                }
+                model = modelos[0];
+                setOllamaConfig({ model });
+            }
+
+            conversation.push({ role: 'user', content: text });
+            conversation = conversation.slice(-MAX_TURNS);
+
+            const contexto = await buildContextSummary();
+            const systemMsg = {
+                role: 'system',
+                content: 'Sos el asistente de FlotaControl, una app de análisis de consumo de combustible. ' +
+                    'Respondé en español rioplatense, corto y directo. No inventes números: si no tenés el ' +
+                    'dato, decilo. Para el detalle de un equipo que no esté en este resumen, usá la tool ' +
+                    'get_equipo_detalle.\n\n' + contexto
+            };
+
+            let round = 0;
+            let ultimoMensaje = null;
+            while (round < MAX_TOOL_ROUNDS) {
+                round++;
+                setStatus(status, round === 1
+                    ? '<i class="fa-solid fa-spinner fa-spin"></i> Pensando...'
+                    : '<i class="fa-solid fa-spinner fa-spin"></i> Consultando datos de la flota...');
+
+                const mensaje = await ollamaChat({
+                    model,
+                    messages: [systemMsg, ...conversation],
+                    tools: [TOOL_GET_EQUIPO_DETALLE]
+                });
+                ultimoMensaje = mensaje;
+                conversation.push(mensaje);
+                conversation = conversation.slice(-MAX_TURNS);
+
+                const toolCalls = Array.isArray(mensaje.tool_calls) ? mensaje.tool_calls : [];
+                if (!toolCalls.length) break;
+
+                for (const tc of toolCalls) {
+                    const nombre = tc.function?.name;
+                    const args = tc.function?.arguments || {};
+                    const resultado = nombre === 'get_equipo_detalle'
+                        ? await resolveEquipoDetalleTool(args.interno)
+                        : { error: `Tool desconocida: ${nombre}` };
+                    conversation.push({ role: 'tool', content: JSON.stringify(resultado) });
+                }
+                conversation = conversation.slice(-MAX_TURNS);
+            }
+
+            const texto = (ultimoMensaje?.content || '').trim();
+            if (texto) {
+                setStatus(status, renderTexto(texto));
+            } else {
+                const motivo = round >= MAX_TOOL_ROUNDS
+                    ? `necesité más pasos de los permitidos (${MAX_TOOL_ROUNDS}) para juntar todos los datos — probá pidiendo un equipo o un grupo más chico a la vez`
+                    : 'no llegó a generar una respuesta esta vez — probá reformular el pedido';
+                setStatus(status, `<i class="fa-solid fa-circle-info"></i> No pude terminar de responder: ${escapeHtml(motivo)}.`);
+            }
+        } catch (e) {
+            console.error('Error en el chat IA:', e);
+            actualizarBadge(badge, 'muted');
+            setStatus(status, `<i class="fa-solid fa-triangle-exclamation" style="color:var(--accent-red)"></i> No se pudo hablar con Ollama: ${escapeHtml(e.message)}`);
+        } finally {
+            btnSend.disabled = false;
+            input.disabled = false;
+            input.focus();
+            history.scrollTop = history.scrollHeight;
+        }
     };
 
     btnSend.addEventListener('click', () => sendMessage());
@@ -87,8 +190,7 @@ export function initAIChat() {
 
     /**
      * Investigación profunda desde afuera del chat: expande el panel del Asistente y le manda
-     * un pedido ya armado (ver abrirInvestigacionMeta() en panel.js), usando la tool real
-     * "web_search" para ir a buscar el dato afuera — no a resumir lo que la app ya muestra.
+     * un pedido ya armado (ver abrirInvestigacionMeta() en panel.js).
      */
     window.preguntarAsistente = (texto) => {
         if (!texto) return;
@@ -100,47 +202,49 @@ export function initAIChat() {
     };
 }
 
+async function verificarDisponibilidad() {
+    try { return await isAvailable(); } catch (e) { return false; }
+}
+
+function actualizarBadge(badge, estado) {
+    if (!badge) return;
+    badge.classList.remove('ai-status-muted', 'ai-status-ok', 'ai-status-checking');
+    if (estado === 'ok') {
+        badge.classList.add('ai-status-ok');
+        badge.innerHTML = '<i class="fa-solid fa-circle"></i> Local';
+    } else if (estado === 'checking') {
+        badge.classList.add('ai-status-checking');
+        badge.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Verificando...';
+    } else {
+        badge.classList.add('ai-status-muted');
+        badge.innerHTML = '<i class="fa-solid fa-circle"></i> No configurada';
+    }
+}
+
+function mensajeNoDisponible() {
+    const { baseUrl } = getOllamaConfig();
+    return '<i class="fa-solid fa-circle-info"></i> No se detectó Ollama en ' + escapeHtml(baseUrl) + '. ' +
+        'El resto de la app (carga, cálculo, panel) funciona igual sin el asistente. ' +
+        'Para activarlo: instalá <a href="https://ollama.com" target="_blank" rel="noopener noreferrer">Ollama</a>, ' +
+        'descargá un modelo (<code>ollama pull qwen2.5:7b</code>) y volvé a intentar — ver docs/DEPLOYMENT.md ' +
+        'si esta app no está en localhost.';
+}
+
 function escapeHtml(str) {
     const div = document.createElement('div');
     div.textContent = str == null ? '' : String(str);
     return div.innerHTML;
 }
 
-/**
- * Renderiza los bloques `content` que devuelve la Messages API: toma los bloques de tipo
- * "text" (ignora tool_use/tool_result/server_tool_use, que son internos del razonamiento),
- * y si el texto trae citas de web_search las muestra como una lista de fuentes.
- */
-function renderContentBlocks(content) {
-    const textBlocks = (content || []).filter(b => b.type === 'text' && b.text);
-    if (textBlocks.length === 0) return '';
-
-    let html = textBlocks.map(b => escapeHtml(b.text).replace(/\n/g, '<br>')).join('<br><br>');
-
-    const citations = [];
-    const seenUrls = new Set();
-    textBlocks.forEach(b => {
-        (b.citations || []).forEach(c => {
-            if (c.url && !seenUrls.has(c.url)) {
-                seenUrls.add(c.url);
-                citations.push(c);
-            }
-        });
-    });
-
-    if (citations.length) {
-        html += '<div style="margin-top:0.5rem; font-size:0.75rem; color:var(--text-muted);">Fuentes: ' +
-            citations.map(c => `<a href="${escapeHtml(c.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(c.title || c.url)}</a>`).join(' · ') +
-            '</div>';
-    }
-
-    return html;
+/** Texto plano de la respuesta de Ollama: sin bloques ni citas (no hay búsqueda web local). */
+function renderTexto(texto) {
+    return escapeHtml(texto).replace(/\n/g, '<br>');
 }
 
 /**
  * Resuelve la tool "get_equipo_detalle": busca el equipo por su código interno (normalizado,
  * mismo criterio que el resto de la app) en el IndexedDB local y arma un detalle completo
- * -no solo el resumen top-10- para que Claude pueda responder preguntas puntuales.
+ * -no solo el resumen top-10- para que el modelo pueda responder preguntas puntuales.
  */
 async function resolveEquipoDetalleTool(internoQuery) {
     if (!internoQuery) {
@@ -205,8 +309,8 @@ async function resolveEquipoDetalleTool(internoQuery) {
 
 /**
  * Arma un resumen en texto plano del estado actual de la flota (equipos, consumos,
- * comparación contra metas) para dárselo a Claude como contexto inicial. Es intencionalmente
- * acotado (top 10) para no volar el tamaño del prompt; para cualquier otro equipo, Claude
+ * comparación contra metas) para dárselo al modelo como contexto inicial. Es intencionalmente
+ * acotado (top 10) para no volar el tamaño del prompt; para cualquier otro equipo, el modelo
  * usa la tool "get_equipo_detalle" definida arriba.
  */
 async function buildContextSummary() {

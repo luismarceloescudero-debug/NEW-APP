@@ -320,3 +320,17 @@ input[type="date"]::-webkit-calendar-picker-indicator {
     background: rgba(245, 158, 11, 0.08); border-radius: 8px; padding: 0.6rem 0.75rem;
     margin-bottom: 0.75rem;
 }
+
+/* ============================================================ */
+/* ESTADO DEL ASISTENTE IA (Fase 5)                              */
+/* ============================================================ */
+
+.ai-status-badge {
+    display: inline-flex; align-items: center; gap: 0.3rem;
+    padding: 0.15rem 0.5rem; border-radius: 999px; font-size: 0.7rem; font-weight: 600;
+    white-space: nowrap; flex-shrink: 0;
+}
+.ai-status-badge i { font-size: 0.5rem; }
+.ai-status-muted { background: rgba(148,163,184,0.15); color: var(--text-muted); }
+.ai-status-ok { background: rgba(16,185,129,0.15); color: var(--accent-green); }
+.ai-status-checking { background: rgba(59,130,246,0.15); color: var(--accent-blue); }

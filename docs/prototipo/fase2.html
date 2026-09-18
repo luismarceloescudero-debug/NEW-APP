@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="es-AR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FlotaControl — Prototipo Fase 2 (sin lógica)</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+<link rel="stylesheet" href="../../styles/main.css">
+<link rel="stylesheet" href="../../styles/components.css">
+<link rel="stylesheet" href="../../styles/panel.css">
+<style>
+    /* Solo para este documento de prototipo, no forma parte de la app */
+    body.theme-dark { padding: 0; }
+    .proto-banner {
+        background: var(--accent-amber); color: #1a1200; font-weight: 600;
+        text-align: center; padding: 0.5rem; font-size: 0.85rem;
+    }
+    .proto-tabs {
+        display: flex; gap: 0.5rem; flex-wrap: wrap; padding: 1rem;
+        background: var(--bg-secondary); border-bottom: 1px solid var(--border-color);
+        position: sticky; top: 0; z-index: 50;
+    }
+    .proto-tabs button.active { background: var(--accent-blue); color: #fff; }
+    .proto-screen { display: none; padding: 1.5rem; max-width: 900px; margin: 0 auto; }
+    .proto-screen.active { display: block; }
+    .proto-screen h2 { margin-bottom: 0.35rem; }
+    .proto-note {
+        color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1.25rem;
+        border-left: 3px solid var(--accent-blue); padding-left: 0.75rem;
+    }
+    .mock-card {
+        background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 12px;
+        padding: 1.25rem; margin-bottom: 1rem;
+    }
+    .mock-card h3 { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; font-size: 1rem; }
+    .badge {
+        display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.2rem 0.6rem;
+        border-radius: 999px; font-size: 0.75rem; font-weight: 600;
+    }
+    .badge-green { background: rgba(16,185,129,0.15); color: var(--accent-green); }
+    .badge-amber { background: rgba(245,158,11,0.15); color: var(--accent-amber); }
+    .badge-muted { background: rgba(148,163,184,0.15); color: var(--text-muted); }
+    .mock-row { display: flex; justify-content: space-between; align-items: center; padding: 0.6rem 0; border-bottom: 1px solid var(--border-color); }
+    .mock-row:last-child { border-bottom: none; }
+    .mock-phone { width: 375px; margin: 0 auto; border: 8px solid #000; border-radius: 28px; overflow: hidden; background: var(--bg-primary); }
+    .mock-phone-screen { height: 640px; overflow-y: auto; position: relative; }
+    .sheet {
+        position: absolute; left: 0; right: 0; bottom: 0; background: var(--bg-card);
+        border-top: 1px solid var(--border-color); border-radius: 16px 16px 0 0;
+        padding: 1rem; box-shadow: var(--shadow-lg);
+    }
+    .sheet-handle { width: 36px; height: 4px; background: var(--border-color); border-radius: 2px; margin: 0 auto 0.75rem; }
+</style>
+</head>
+<body class="theme-dark">
+    <div class="proto-banner">
+        PROTOTIPO — sin lógica de negocio · Fase 2 de PLAN4.md · no forma parte de la app publicada
+    </div>
+    <nav class="proto-tabs">
+        <button class="active" data-target="p-datos-locales"><i class="fa-solid fa-shield-halved"></i> Aviso de datos locales</button>
+        <button data-target="p-ia"><i class="fa-solid fa-robot"></i> Estado de IA</button>
+        <button data-target="p-backup"><i class="fa-solid fa-box-archive"></i> Backup y restauración</button>
+        <button data-target="p-mobile"><i class="fa-solid fa-mobile-screen"></i> Vista móvil</button>
+    </nav>
+
+    <!-- ============ F8: aviso de datos locales ============ -->
+    <section id="p-datos-locales" class="proto-screen active">
+        <h2>Aviso de datos locales (F8)</h2>
+        <p class="proto-note">Aparece la primera vez que se abre la app, y siempre disponible desde un ícono en el header. Objetivo: que el usuario entienda qué se guarda y dónde antes de cargar planillas reales.</p>
+
+        <div class="mock-card">
+            <h3><i class="fa-solid fa-shield-halved" style="color:var(--accent-green)"></i> Tus datos quedan en esta computadora</h3>
+            <p style="color:var(--text-secondary); font-size:0.9rem; line-height:1.6;">
+                FlotaControl procesa las planillas Excel en este navegador y guarda el resultado
+                acá mismo (IndexedDB). Nada se sube a un servidor: si cerrás la página, los datos
+                siguen en esta PC la próxima vez que la abras.
+            </p>
+            <ul style="margin: 0.75rem 0 1rem 1.25rem; color:var(--text-secondary); font-size:0.88rem; line-height:1.7;">
+                <li>Los datos <strong>no se sincronizan</strong> entre computadoras por su cuenta.</li>
+                <li>Para pasarlos a otra PC (o como respaldo), usá <strong>Backup</strong>.</li>
+                <li>Si limpiás el navegador (o usás modo incógnito), los datos se pierden.</li>
+                <li>El asistente IA es opcional y, si se usa, corre en esta misma PC (Ollama).</li>
+            </ul>
+            <button class="btn-primary">Entendido</button>
+        </div>
+    </section>
+
+    <!-- ============ F6: estado de IA ============ -->
+    <section id="p-ia" class="proto-screen">
+        <h2>Estado del asistente IA (F6)</h2>
+        <p class="proto-note">Tres estados posibles. Nunca bloquea el resto de la app: son variantes del mismo panel lateral que ya existe.</p>
+
+        <div class="mock-card">
+            <h3><i class="fa-solid fa-robot"></i> Asistente de Flota <span class="badge badge-green" style="margin-left:auto"><i class="fa-solid fa-circle" style="font-size:0.5rem"></i> Local</span></h3>
+            <p style="color:var(--text-secondary); font-size:0.85rem;">Modelo: <code>qwen2.5:7b</code> · Ollama en esta PC</p>
+            <p style="color:var(--text-muted); font-size:0.8rem; margin-top:0.5rem;">La IA local no envía datos a internet.</p>
+        </div>
+
+        <div class="mock-card">
+            <h3><i class="fa-solid fa-robot"></i> Asistente de Flota <span class="badge badge-muted" style="margin-left:auto"><i class="fa-solid fa-circle" style="font-size:0.5rem"></i> No configurada</span></h3>
+            <p style="color:var(--text-secondary); font-size:0.85rem;">
+                No se detectó Ollama en esta computadora. El resto de la app (carga, cálculo,
+                panel) funciona igual sin el asistente.
+            </p>
+            <button class="btn-secondary btn-sm" style="margin-top:0.5rem;">Cómo instalar Ollama</button>
+        </div>
+
+        <div class="mock-card">
+            <h3><i class="fa-solid fa-robot"></i> Asistente de Flota <span class="badge badge-amber" style="margin-left:auto"><i class="fa-solid fa-triangle-exclamation" style="font-size:0.7rem"></i> Remota</span></h3>
+            <p style="color:var(--text-secondary); font-size:0.85rem;">
+                Esta consulta enviará el resumen necesario a un proveedor externo. No se envían
+                los archivos Excel completos.
+            </p>
+        </div>
+    </section>
+
+    <!-- ============ F5: backup y restauración ============ -->
+    <section id="p-backup" class="proto-screen">
+        <h2>Backup y restauración (F5)</h2>
+        <p class="proto-note">Nueva pantalla, accesible desde el header (junto a Re-analizar). Exporta/importa un único archivo .json versionado.</p>
+
+        <div class="mock-card">
+            <h3><i class="fa-solid fa-clock-rotate-left"></i> Último backup</h3>
+            <div class="mock-row">
+                <span>15/09/2026 18:32 · 189 equipos, 4.683 cargas</span>
+                <span class="badge badge-green"><i class="fa-solid fa-check"></i> hace 3 días</span>
+            </div>
+            <p style="color:var(--text-muted); font-size:0.8rem; margin-top:0.5rem;">
+                <i class="fa-solid fa-circle-info"></i> Recomendado: hacer un backup después de cada
+                sesión de correcciones importante.
+            </p>
+        </div>
+
+        <div class="mock-card">
+            <h3><i class="fa-solid fa-download"></i> Exportar</h3>
+            <p style="color:var(--text-secondary); font-size:0.85rem; margin-bottom:0.75rem;">
+                Genera un archivo <code>.json</code> con todo lo guardado en este navegador: maestro,
+                metas, correcciones, seguimiento, referentes, configuración y mapeos.
+            </p>
+            <label style="display:flex; align-items:center; gap:0.5rem; font-size:0.85rem; margin-bottom:0.75rem; color:var(--text-secondary);">
+                <input type="checkbox" checked disabled> Incluir movimientos (cargas/GPS ya procesados)
+            </label>
+            <button class="btn-primary"><i class="fa-solid fa-file-arrow-down"></i> Descargar backup</button>
+        </div>
+
+        <div class="mock-card">
+            <h3><i class="fa-solid fa-upload"></i> Restaurar</h3>
+            <p style="color:var(--text-secondary); font-size:0.85rem; margin-bottom:0.75rem;">
+                Reemplaza lo guardado en este navegador por el contenido de un backup. Se valida el
+                formato y la versión antes de tocar cualquier dato.
+            </p>
+            <div style="border: 2px dashed var(--border-color); border-radius: 10px; padding: 1.5rem; text-align:center; color:var(--text-muted); margin-bottom:0.75rem;">
+                <i class="fa-solid fa-file-arrow-up" style="font-size:1.5rem; margin-bottom:0.5rem; display:block;"></i>
+                Arrastrá un archivo de backup (.json) o hacé clic para elegirlo
+            </div>
+            <div class="mock-row" style="background:rgba(245,158,11,0.08); border-radius:8px; padding:0.75rem; border-bottom:none;">
+                <span style="font-size:0.85rem;"><i class="fa-solid fa-triangle-exclamation" style="color:var(--accent-amber)"></i> Esto reemplaza los datos actuales de este navegador. No se puede deshacer.</span>
+            </div>
+            <button class="btn-secondary" style="margin-top:0.75rem;" disabled>Restaurar backup</button>
+        </div>
+    </section>
+
+    <!-- ============ F7: vista móvil ============ -->
+    <section id="p-mobile" class="proto-screen">
+        <h2>Vista móvil (F7)</h2>
+        <p class="proto-note">Los filtros colapsan a un botón con contador; el asistente IA pasa de panel lateral a hoja inferior (bottom sheet). El panel no tiene ancho fijo y no tapa la última fila de tarjetas.</p>
+
+        <div class="mock-phone">
+            <div class="mock-phone-screen">
+                <div style="padding:0.75rem; border-bottom:1px solid var(--border-color); display:flex; justify-content:space-between; align-items:center;">
+                    <strong style="font-size:0.95rem;"><i class="fa-solid fa-truck-fast"></i> FlotaControl</strong>
+                    <i class="fa-solid fa-gear" style="color:var(--text-muted)"></i>
+                </div>
+                <div style="padding:0.75rem; display:flex; gap:0.5rem;">
+                    <button class="btn-secondary btn-sm" style="flex:1;"><i class="fa-solid fa-sliders"></i> Filtros (3)</button>
+                    <button class="btn-secondary btn-sm" style="flex:1;"><i class="fa-solid fa-arrow-down-wide-short"></i> Ordenar</button>
+                </div>
+                <div style="padding: 0 0.75rem 6rem;">
+                    <div class="mock-card" style="margin-bottom:0.6rem;">
+                        <div class="mock-row" style="border:none; padding:0;">
+                            <strong>TR20</strong><span class="badge badge-amber">+13,7%</span>
+                        </div>
+                        <p style="color:var(--text-muted); font-size:0.8rem; margin-top:0.35rem;">10,8 L/h vs meta 9,5 · 6 de 8 meses</p>
+                    </div>
+                    <div class="mock-card" style="margin-bottom:0.6rem;">
+                        <div class="mock-row" style="border:none; padding:0;">
+                            <strong>CM43</strong><span class="badge badge-muted">Sin GPS</span>
+                        </div>
+                        <p style="color:var(--text-muted); font-size:0.8rem; margin-top:0.35rem;">Estimado por grupo · Meta pendiente</p>
+                    </div>
+                </div>
+                <div class="sheet">
+                    <div class="sheet-handle"></div>
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
+                        <strong><i class="fa-solid fa-robot"></i> Asistente</strong>
+                        <span class="badge badge-muted" style="font-size:0.7rem;">No configurada</span>
+                    </div>
+                    <input type="text" placeholder="Preguntame algo..." style="width:100%; padding:0.6rem; border-radius:8px; border:1px solid var(--border-color); background:var(--bg-input); color:var(--text-primary);" disabled>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <script>
+        // Solo cambia de pestaña. Cero lógica de negocio: es un mockup.
+        document.querySelectorAll('.proto-tabs button').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.proto-tabs button').forEach(b => b.classList.remove('active'));
+                document.querySelectorAll('.proto-screen').forEach(s => s.classList.remove('active'));
+                btn.classList.add('active');
+                document.getElementById(btn.dataset.target).classList.add('active');
+            });
+        });
+    </script>
+</body>
+</html>

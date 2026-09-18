@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  no-data-committed:
+    name: Sin datos de flota en el repo
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Buscar archivos que nunca deben commitearse
+        run: |
+          # Nombres/extensiones que .gitignore bloquea localmente. Esto es la red de
+          # seguridad para lo que igual haya entrado con un `git add -f`.
+          patrones='\.xlsx$|\.xls$|\.csv$|\.sqlite3?$|(^|/)\.env$|(^|/)\.env\.[^.]+$|(^|/)invariantes(\.local)?\.json$'
+          coincidencias=$(git ls-files | grep -Ei "$patrones" || true)
+          if [ -n "$coincidencias" ]; then
+            echo "::error::Se encontraron archivos que no deben estar en el repositorio:"
+            echo "$coincidencias"
+            exit 1
+          fi
+          echo "OK: no hay planillas, .env ni invariantes en el árbol versionado."
+
+  sintaxis:
+    name: Sintaxis de todos los módulos
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: node --check en cada .js/.mjs/.cjs
+        run: |
+          fallo=0
+          while IFS= read -r -d '' archivo; do
+            node --check "$archivo" || fallo=1
+          done < <(find . -path ./node_modules -prune -o -type f \( -name '*.js' -o -name '*.mjs' -o -name '*.cjs' \) -print0)
+          exit $fallo
+
+  arneses-sin-datos:
+    name: Arneses que no requieren planillas reales
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: npm run declarados
+        run: npm run declarados
+
+      # `verificar` y `auditar` necesitan las planillas reales de la flota (FLOTACONTROL_ARCHIVOS)
+      # y una referencia privada (FLOTACONTROL_INVARIANTES): a propósito nunca viven en este
+      # repositorio público, así que no pueden correr en CI. Se corren a mano antes de cada
+      # release — ver docs/FASE-0-DATOS.md y README.md.

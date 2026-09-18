@@ -1,8 +1,9 @@
 # FlotaControl — Control local de consumo de combustible
 
-FlotaControl es una aplicación web **local-first** para analizar la flota. El frontend procesa
-las planillas en el navegador y guarda el trabajo en IndexedDB. El núcleo no necesita backend,
-GitHub ni Vercel para funcionar.
+FlotaControl es una aplicación web **local-first** para analizar la flota: se puede instalar
+(PWA) y funciona sin internet. El frontend procesa las planillas en el navegador y guarda el
+trabajo en IndexedDB. No tiene backend propio; no necesita GitHub, Vercel ni ningún servidor
+para funcionar.
 
 Los archivos reales de la flota no forman parte de este repositorio y nunca deben subirse a GitHub.
 La IA es opcional: sin proveedor configurado, el análisis local sigue funcionando.
@@ -63,12 +64,10 @@ clic** (`file://`): el navegador bloquea los módulos por CORS. Hay que servirlo
 npm run dev                     # abrir http://localhost:8080
 ```
 
-El servidor local sirve el frontend y también monta `/api/chat`, por lo que permite probar Ollama
-sin instalar Vercel CLI. Si solo se quiere servir el frontend, también funciona `python -m
-http.server 8080`, pero el chat no estará disponible.
+También funciona cualquier servidor estático, por ejemplo `python -m http.server 8080`.
 
-Para IA sin cuota de proveedor se puede usar Ollama en la computadora. El núcleo de FlotaControl
-sigue funcionando aunque Ollama no esté instalado.
+Para el asistente IA hace falta Ollama corriendo en la misma computadora (ver "Asistente de
+IA" más abajo). El núcleo de FlotaControl sigue funcionando aunque Ollama no esté instalado.
 
 ## Verificación de datos
 
@@ -105,52 +104,50 @@ La guía de publicación está en `docs/DEPLOYMENT.md` y la de pruebas en `docs/
 
 ## Asistente de IA
 
-La IA remota usa Claude a través de una función serverless en `api/chat.js`. La API key vive
-únicamente en una variable de entorno del hosting, nunca en el navegador. La suscripción de
-Claude.ai no sustituye una API de Anthropic y la API remota se factura por uso.
+El asistente corre con [Ollama](https://ollama.com) en la misma computadora: el navegador le
+habla directo, sin backend, sin API key y sin enviar datos de la flota a ningún servidor. Si
+Ollama no está instalado o no responde, la app muestra "IA no configurada" y el resto sigue
+funcionando igual — la IA nunca es requisito para analizar la flota.
 
-La IA local mediante Ollama no necesita una API paga ni envía datos fuera del equipo. Para usarla
-con el chat integrado, el backend local se configura con `AI_PROVIDER=ollama`.
+El asistente tiene acceso al resumen de la flota y al detalle de cualquier equipo bajo demanda
+(tool `get_equipo_detalle`, resuelta contra el IndexedDB local). No hay búsqueda web en este
+release: un modelo local no puede salir a internet por su cuenta.
 
-El asistente tiene acceso real al resumen de la flota y al detalle de cualquier equipo bajo
-demanda (tool `get_equipo_detalle`). La búsqueda web solo está disponible con Anthropic y tiene
-costo aparte por búsqueda.
+Ver `docs/DEPLOYMENT.md` para instalar Ollama y habilitar el origen del sitio.
+
+Un backend con un proveedor remoto (Claude/Anthropic) quedó documentado pero sin desplegar en
+`extras/remote-chat/`.
 
 ## Despliegue
 
-### GitHub Pages
-
-El workflow `.github/workflows/pages.yml` publica solo el frontend estático. El núcleo funciona,
-pero GitHub Pages no ejecuta `/api/chat`; la IA remota queda deshabilitada.
-
-### Vercel
-
-Vercel puede servir el frontend y ejecutar `api/chat.js`. Requiere variables de entorno y no debe
-considerarse autenticación por sí solo. Las características del plan gratuito pueden cambiar; la
-aplicación no depende de ellas para conservar datos ni calcular.
-
-Variables remotas: `AI_PROVIDER=anthropic`, `ANTHROPIC_API_KEY`, `APP_SHARED_SECRET`,
-`ANTHROPIC_MODEL` y `ANTHROPIC_MAX_WEB_SEARCHES`. Para Ollama local: `AI_PROVIDER=ollama`,
-`OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `OLLAMA_KEEP_ALIVE` y opcionalmente `OLLAMA_NUM_CTX`.
+FlotaControl es 100% estática: cualquier hosting de archivos sirve. El principal es **GitHub
+Pages**, gratuito en repos públicos (workflow `.github/workflows/pages.yml`). Se evaluó y se
+descartó Vercel como opción principal por su límite de uso no comercial. Detalle completo,
+incluyendo cómo habilitar Ollama contra un sitio publicado, en `docs/DEPLOYMENT.md`.
 
 ## Estructura
 
 ```
 index.html              Página única (Carga de Datos + Panel de Flota)
-xlsx.full.min.js        SheetJS, servido localmente (no desde CDN)
-api/chat.js             Backend del asistente (función serverless)
-js/app.js               Arranque, navegación, botón Re-analizar
-js/data/normalizer.js   Normalización, denominaciones, parseo de horas y metas
-js/data/analyzer.js     Reglas de negocio y análisis de toda la flota
-js/data/database.js     IndexedDB
-js/parsers/             Detección de formato y extracción de cada planilla
-js/ui/panel.js          Panel unificado (KPIs + tarjetas editables)
-js/ui/datatable.js      Visor/editor de tablas
-js/ui/modals.js         Detalle por equipo
-js/ai/chat.js           Cliente del asistente
+manifest.webmanifest     Metadatos de instalación (PWA)
+sw.js                    Service worker: caché para uso sin conexión
+xlsx.full.min.js         SheetJS, servido localmente (no desde CDN)
+js/app.js                Arranque, navegación, botón Re-analizar
+js/data/normalizer.js    Normalización, denominaciones, parseo de horas y metas
+js/data/analyzer.js      Reglas de negocio y análisis de toda la flota
+js/data/database.js      IndexedDB
+js/parsers/              Detección de formato y extracción de cada planilla
+js/ui/panel.js           Panel unificado (KPIs + tarjetas editables)
+js/ui/datatable.js       Visor/editor de tablas
+js/ui/modals.js          Detalle por equipo
+js/ui/backup.js          Exportar/restaurar los datos guardados en el navegador
+js/ai/chat.js            Cliente del asistente (UI, resumen de contexto)
+js/ai/ollama.js          Adaptador de Ollama (fetch directo, sin backend)
+extras/remote-chat/      Backend remoto (Claude/Anthropic) documentado, sin desplegar
 ```
 
 ## Licencia
 
-El código y la licencia deben revisarse antes de publicarlo como open source. Los datos reales,
-credenciales y reglas propietarias de HSV Logística permanecen fuera del repositorio público.
+Código bajo licencia MIT (ver `LICENSE`). No cubre datos operativos de flota, planillas ni
+reglas comerciales internas de HSV Logística: ese contenido nunca forma parte de este
+repositorio (ver `.gitignore`).

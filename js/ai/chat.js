@@ -1,19 +1,16 @@
 /**
  * AI Chat interaction logic — Asistente de Flota
  *
- * Usa Claude (Anthropic) vía un backend propio (/api/chat.js): el navegador nunca ve
- * ninguna API key, solo le habla a "/api/chat" en el mismo dominio.
+ * FASE 1 (18/09/2026): se cortó el backend remoto (/api/chat, Claude vía Anthropic). Ese
+ * endpoint necesitaba un secreto en el frontend (X-App-Secret) que en un repo público
+ * cualquiera puede leer con "Ver código fuente" — no protegía nada. El código de ese backend
+ * sigue disponible en extras/remote-chat/ por si se reactiva más adelante con autenticación
+ * real (ver ese README).
  *
- * Capacidades reales de este chat (no simulado):
- *   - Análisis en lenguaje natural sobre un resumen real de la flota (buildContextSummary).
- *   - Tool-use "get_equipo_detalle": si Claude necesita el detalle de un equipo que no está
- *     en el resumen (el resumen solo trae el top 10), pide esta tool; ACÁ se resuelve
- *     (resolveEquipoDetalleTool) consultando el IndexedDB local, y se le devuelve el
- *     resultado para que siga razonando. Esto le da acceso efectivo a TODA la flota
- *     cargada, no solo al top 10, sin tener que mandar todo de una en cada mensaje.
- *   - Tool "web_search" (nativa de Anthropic): permite research real en internet (precios
- *     de gasoil, normativa, comparativas de mercado). Se resuelve del lado de Anthropic;
- *     acá solo hace falta mostrar el resultado y, si vienen, las fuentes citadas.
+ * FASE 5 (pendiente): el asistente va a hablarle directo a Ollama, corriendo en la misma
+ * computadora (http://127.0.0.1:11434), sin backend ni API key. Hasta entonces esta vista
+ * informa "IA no configurada" y el resto de la app funciona igual — la IA nunca fue requisito
+ * para analizar la flota.
  */
 import { getAllEquipos, getAllRawRecords, getAllEstimados } from '../data/database.js';
 import {
@@ -27,9 +24,7 @@ import {
     getGPSForEquipo
 } from '../data/analyzer.js';
 import { normalizeEquipoKey } from '../data/normalizer.js';
-import { APP_SECRET_HEADER, APP_SECRET_VALUE } from '../config/appSecret.js';
 
-const API_ENDPOINT = '/api/chat';
 const MAX_TURNS = 16; // mensajes (usuario+asistente, incluye idas y vueltas de tools) en memoria
 // Subido de 4 a 8 (2026-08-27): un pedido que toca varios equipos a la vez (ej. "investigar
 // y ajustar metas" sobre 10 equipos) necesita una ronda de tool_use por cada consulta de
@@ -78,103 +73,11 @@ export function initAIChat() {
         conversation = conversation.slice(-MAX_TURNS);
         if (presetText == null) input.value = '';
 
-        const status = appendMsg('system', '<i class="fa-solid fa-spinner fa-spin"></i> Pensando...');
-        btnSend.disabled = true;
-        input.disabled = true;
-
-        let renderedAny = false;
-        let lastStopReason = null; // para poder explicar POR QUÉ no hubo texto, no solo que no lo hubo
-
-        try {
-            const context = await buildContextSummary();
-            let round = 0;
-
-            while (round < MAX_TOOL_ROUNDS) {
-                round++;
-
-                const response = await fetch(API_ENDPOINT, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', [APP_SECRET_HEADER]: APP_SECRET_VALUE },
-                    body: JSON.stringify({ messages: conversation, context })
-                });
-
-                let data;
-                try { data = await response.json(); } catch (e) { data = {}; }
-
-                if (!response.ok) {
-                    setStatus(status, `<i class="fa-solid fa-triangle-exclamation" style="color:var(--accent-red)"></i> ${escapeHtml(data.error || 'Error al conectar con el asistente.')}`);
-                    return;
-                }
-
-                const content = Array.isArray(data.content) ? data.content : [];
-                conversation.push({ role: 'assistant', content });
-                conversation = conversation.slice(-MAX_TURNS);
-                lastStopReason = data.stopReason || null;
-
-                const textHtml = renderContentBlocks(content);
-                if (textHtml) {
-                    setStatus(status, textHtml);
-                    renderedAny = true;
-                }
-
-                if (data.stopReason === 'pause_turn') {
-                    // Búsqueda larga pausada: según la doc de Anthropic hay que reenviar
-                    // el mensaje pausado sin cambios para que continúe.
-                    setStatus(status, (textHtml || '') + '<br><i class="fa-solid fa-spinner fa-spin"></i> Buscando información, un momento...');
-                    continue;
-                }
-
-                if (data.stopReason === 'tool_use') {
-                    const toolUses = content.filter(b => b.type === 'tool_use' && b.name === 'get_equipo_detalle');
-                    if (toolUses.length === 0) {
-                        // Tool desconocida o resuelta server-side (ej. solo web_search):
-                        // no hay nada más que hacer de este lado, se corta el loop.
-                        break;
-                    }
-                    setStatus(status, (textHtml || '') + '<br><i class="fa-solid fa-spinner fa-spin"></i> Consultando datos de la flota...');
-
-                    const toolResults = [];
-                    for (const tu of toolUses) {
-                        const interno = tu.input && tu.input.interno;
-                        const result = await resolveEquipoDetalleTool(interno);
-                        toolResults.push({
-                            type: 'tool_result',
-                            tool_use_id: tu.id,
-                            content: JSON.stringify(result)
-                        });
-                    }
-                    conversation.push({ role: 'user', content: toolResults });
-                    conversation = conversation.slice(-MAX_TURNS);
-                    continue; // volver a llamar a /api/chat con el resultado de la tool
-                }
-
-                // end_turn / max_tokens / stop_sequence / null -> respuesta final
-                break;
-            }
-
-            if (!renderedAny) {
-                // Antes esto era un mensaje mudo ("no devolvió una respuesta de texto") sin decir
-                // por qué, que para el usuario era indistinguible de "está roto". Casi siempre es
-                // una de estas dos cosas puntuales, no una falla general del asistente:
-                let motivo;
-                if (round >= MAX_TOOL_ROUNDS) {
-                    motivo = `necesité más pasos de los permitidos (${MAX_TOOL_ROUNDS}) para juntar todos los datos — probá pidiendo un equipo o un grupo más chico a la vez`;
-                } else if (lastStopReason === 'max_tokens') {
-                    motivo = 'la respuesta se cortó por longitud antes de terminar — probá pidiendo algo más acotado';
-                } else {
-                    motivo = `no llegó a generar una respuesta esta vez (motivo interno: ${lastStopReason || 'desconocido'}) — probá reformular el pedido`;
-                }
-                setStatus(status, `<i class="fa-solid fa-circle-info"></i> No pude terminar de responder: ${escapeHtml(motivo)}.`);
-            }
-        } catch (e) {
-            console.error('Error en el chat IA:', e);
-            setStatus(status, '<i class="fa-solid fa-triangle-exclamation" style="color:var(--accent-red)"></i> No se pudo conectar con el asistente (¿la app está desplegada con el backend /api/chat activo?).');
-        } finally {
-            btnSend.disabled = false;
-            input.disabled = false;
-            input.focus();
-            history.scrollTop = history.scrollHeight;
-        }
+        const status = appendMsg('system', '<i class="fa-solid fa-circle-info"></i> IA no configurada.');
+        // FASE 1: sin backend remoto. FASE 5 (pendiente) conecta esto a Ollama local — ver el
+        // comentario de arriba de archivo. buildContextSummary() y resolveEquipoDetalleTool()
+        // quedan implementadas y probadas para que esa fase solo tenga que cablear el proveedor.
+        setStatus(status, '<i class="fa-solid fa-circle-info"></i> IA no configurada todavía en este release. El resto de la app (carga, cálculo, panel) funciona igual sin ella.');
     };
 
     btnSend.addEventListener('click', () => sendMessage());

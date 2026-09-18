@@ -227,3 +227,23 @@ Detalle en [`docs/FASE-0-DATOS.md`](docs/FASE-0-DATOS.md). El informe por fila q
 - **El arnés no lo detectaba:** `verificar` ahora controla los KPIs del panel y su coherencia interna antes de permitir `--actualizar`.
 - **Referencia nueva:** se generó fuera del repo con el código corregido. La vieja y una copia de la planilla quedaron congeladas al lado.
 - **`npm run probar`:** los tres arneses en verde.
+
+### Fases 1 a 6 — 18/09/2026 · completadas de corrido
+
+Ejecutadas en la misma sesión, sin la pausa de aprobación separada que pide la Fase 2 (pedido explícito: correr Fase 1 a Fase 6 seguidas). Detalle completo de cada una en su propio documento:
+
+| Fase | Commit | Documento |
+|---|---|---|
+| 1 — Repo público, CI, sin secretos | `9b67bed` | (ver README.md y docs/DEPLOYMENT.md) |
+| 2 — Prototipo visual | `5aae51b` | [`docs/prototipo/FASE-2-APROBACION.md`](docs/prototipo/FASE-2-APROBACION.md) |
+| 3 — Backup y restauración | `21282f6` | [`docs/FASE-3-BACKUP.md`](docs/FASE-3-BACKUP.md) |
+| 4 — PWA, CSP, sin CDN | `bf65b93` | [`docs/FASE-4-PWA.md`](docs/FASE-4-PWA.md) |
+| 5 — IA local con Ollama | `eba3c55` | [`docs/FASE-5-IA-LOCAL.md`](docs/FASE-5-IA-LOCAL.md) |
+| 6 — Release 1.0.0 | (este commit) | [`docs/FASE-6-RELEASE.md`](docs/FASE-6-RELEASE.md) |
+
+Puntos que merecen quedar acá, no solo en el documento de su fase:
+
+- **Se encontraron y sacaron más restos del código roto del 17/09** que la Fase 0 no había visto: dos `<select>` y un botón en `panel.js` que llamaban a funciones inexistentes (Fase 4), y un aviso de que probablemente queden más si se audita el resto de `panel.js` con la misma lupa.
+- **El smoke test con datos reales (Fase 6) encontró 3 bugs de CSS en la vista móvil** que ningún arnés podía ver (no tienen DOM) y que las Fases 2–5 tampoco vieron (se probaron mayormente con la base vacía). Quedan corregidos — detalle en `docs/FASE-6-RELEASE.md`.
+- **El repo quedó limpio**: sin planillas, sin `.env`, sin `node_modules` comiteado; `git status` en cero antes de cada commit de fase.
+- **Falta hacer, no bloquea el release:** probar contra una instalación real de Ollama (se probó con `fetch` interceptado) y un "modo avión" real de navegador (se probó por inspección del Cache Storage).

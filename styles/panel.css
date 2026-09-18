@@ -193,6 +193,25 @@
 .diag-val { display: flex; flex-direction: column; text-align: right; font-weight: 600; color: var(--text-primary); font-size: 0.85rem; }
 .diag-val small { font-weight: 400; color: var(--text-muted); font-size: 0.72rem; }
 
+/* El hallazgo "normalizaciones" (diagnostico.js) reutiliza esta fila de equipo para listar
+   párrafos completos (qué se corrigió y con qué función), no un valor corto tipo "762 h en
+   ralentí". `white-space: nowrap` de la regla de arriba está pensado para eso último — acá,
+   sin un ancho fijo en el <small>, el texto no se elide (le falta display:block para que
+   text-overflow funcione) y en vez de eso empuja todo el ancho de la página. Se permite el
+   wrap normal y se ocupa el ancho completo de la fila. */
+li[data-hallazgo="normalizaciones"] {
+    align-items: flex-start;
+}
+li[data-hallazgo="normalizaciones"] .diag-val {
+    text-align: left;
+    max-width: 100%;
+}
+li[data-hallazgo="normalizaciones"] .diag-val small {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+}
+
 .diag-bajo-promedio {
     margin: 0 0 0.9rem; border: 1px solid var(--border-color); border-radius: 8px;
     background: var(--bg-input); overflow: hidden;
@@ -667,6 +686,11 @@
     .toolbar-left > * { flex: 1; }
     .periodo-detalle { text-align: left; }
     .calc-op { display: none; }
+    /* .table-head-actions tiene flex-shrink: 0 a propósito (no se achican los botones), pero
+       eso mismo le impedía pasar a su propia fila completa y respetar el ancho de pantalla:
+       con width: 100% acá, su propio flex-wrap (ya declarado) recién puede acomodar los
+       botones en más de una línea en vez de desbordar. */
+    .table-head-actions { width: 100%; }
 }
 
 /* ============================================================
@@ -744,8 +768,20 @@
 
 /* --- Toolbar en dos filas, sin apretujarse --- */
 .cards-toolbar { flex-direction: column; align-items: stretch; gap: 0.6rem; }
-.toolbar-row { display: flex; gap: 0.55rem; flex-wrap: wrap; align-items: center; }
-.toolbar-row > select { flex: 1 1 150px; min-width: 0; }
+.toolbar-row {
+    display: flex; gap: 0.55rem; flex-wrap: wrap; align-items: center;
+    /* .cards-toolbar (flex-direction: column) espera que "align-items: stretch" alcance
+       para que esta fila ocupe su ancho — pero al ser display:flex ella misma, encoge según
+       el contenido de sus <select> en vez de estirarse al ancho del contenedor, y termina
+       más ancha que la pantalla ("Ubicación" y "Ficha técnica", que van solas en su fila).
+       width: 100% explícito lo fuerza. */
+    width: 100%;
+    box-sizing: border-box;
+    min-width: 0;
+}
+/* max-width además de min-width: 0 porque algunos navegadores igual no encogen un <select>
+   por debajo del ancho de su opción más larga solo con flex-shrink + min-width: 0. */
+.toolbar-row > select { flex: 1 1 150px; min-width: 0; max-width: 100%; }
 .toolbar-periodo { border-top: 1px solid var(--border-color); padding-top: 0.6rem; }
 .toolbar-periodo select { flex: 0 1 150px; }
 .toolbar-ubicacion { border-top: 1px solid var(--border-color); padding-top: 0.6rem; }

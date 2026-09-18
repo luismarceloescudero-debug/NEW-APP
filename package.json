@@ -1,4 +1,9 @@
 {
+  "name": "flotacontrol",
+  "version": "1.0.0",
+  "description": "Análisis local de consumo de combustible de la flota. Procesa las planillas en el navegador; los datos no salen de la computadora.",
+  "license": "MIT",
+  "private": true,
   "_comment": "NO agregar \"type\": \"module\": xlsx.full.min.js es UMD y se carga con createRequire() en los arneses. Bajo type:module ese require() devuelve un objeto vacio, el parseo produce 0 filas y la verificacion mide 0 equipos en vez de 189 — sin lanzar ningun error.",
   "scripts": {
     "dev": "node tools/servidor-local.cjs",

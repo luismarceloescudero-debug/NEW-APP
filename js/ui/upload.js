@@ -1,5 +1,6 @@
 import { AppState, irA } from '../app.js';
-import { dispatchFileParser } from '../parsers/index.js';
+import { dispatchFileParser, inspeccionarArchivo } from '../parsers/index.js';
+import { abrirVistaPrevia } from './mapeo.js';
 import { clearMovimientos, getDBStats, getArchivosProcesados, getAllRawRecords } from '../data/database.js';
 import { periodosAnalisisAutomatico, mesesDeRegistro } from '../data/analyzer.js';
 
@@ -213,13 +214,40 @@ async function processAllFiles() {
     let ok = 0, errores = 0;
     const resumen = [];
 
+    // Fase 7: antes de importar, se mira cada archivo. Los que coinciden exacto con un formato
+    // conocido (o con uno ya confirmado antes) se importan primero, como siempre; los que no,
+    // quedan para la vista previa de columnas — así, cuando se revisan, las cargas de la
+    // planilla global ya están guardadas y se puede medir si el archivo nuevo las duplica.
+    const inspecciones = new Map();
     for (const f of pendientes) {
+        try { inspecciones.set(f, await inspeccionarArchivo(f.file)); }
+        catch (e) { inspecciones.set(f, { estado: 'error', motivo: e.message }); }
+    }
+    // Orden: formatos conocidos (la planilla global de cargas), después los recordados, al final
+    // los que hay que revisar. Así, cuando un recordado o uno nuevo se compara contra las cargas
+    // para detectar duplicados, la planilla global ya está guardada.
+    const prioridad = { reconocido: 0, recordado: 1, revisar: 2 };
+    const orden = [...pendientes].sort((a, b) => (prioridad[inspecciones.get(a)?.estado] ?? 3) - (prioridad[inspecciones.get(b)?.estado] ?? 3));
+
+    for (const f of orden) {
         const badge = document.getElementById(`badge-${safeId(f.file.name)}`);
+        const insp = inspecciones.get(f);
+        let decision = null;
+        if (insp?.estado === 'revisar') {
+            if (badge) { badge.className = 'badge processing'; badge.innerText = 'REVISAR'; }
+            decision = await abrirVistaPrevia(insp, f.file);
+            if (!decision) {
+                f.status = 'error';
+                f.detalle = 'Omitido: no se confirmaron las columnas';
+                if (badge) { badge.className = 'badge error'; badge.innerText = 'OMITIDO'; }
+                continue;
+            }
+        }
         f.status = 'processing';
         if (badge) { badge.className = 'badge processing'; badge.innerText = 'PROCESANDO'; }
 
         try {
-            const meta = await dispatchFileParser(f.file);
+            const meta = await dispatchFileParser(f.file, decision);
             f.status = 'done';
             f.meta = meta || null;
             f.detalle = meta && meta.tipo ? `${meta.tipo} · ${meta.filas} filas` : '';

@@ -31,7 +31,7 @@ PWA significa *Progressive Web App*: una página web que se puede instalar como 
 - poner autenticación real;
 - tener una base persistente, que Vercel gratuito no trae (sus funciones no guardan estado).
 
-Todo eso para resolver algo que hoy no es un problema. Si más adelante hace falta compartir datos entre personas, se decide en la Fase 7.
+Todo eso para resolver algo que hoy no es un problema. Si más adelante hace falta compartir datos entre personas, se decide en la Fase 8.
 
 ---
 
@@ -75,7 +75,7 @@ GitHub Actions ──► GitHub Pages (hosting estático gratuito, HTTPS)
 - **Vercel Hobby** es para uso **personal y no comercial**. Una herramienta interna de HSV Logística es uso comercial, así que no conviene apoyarse ahí.
   - Además, lo único que Vercel agregaría es `/api/chat`.
   - Con Ollama, esa función **no sirve**: el servidor de Vercel no puede llegar al `127.0.0.1` de tu PC.
-- Si en el futuro se necesita una función serverless gratuita con uso comercial permitido, la alternativa es **Cloudflare Pages + Workers**, en su plan gratuito (Fase 7).
+- Si en el futuro se necesita una función serverless gratuita con uso comercial permitido, la alternativa es **Cloudflare Pages + Workers**, en su plan gratuito (Fase 8).
 - **Un solo hosting.** Tener la misma app en dos URLs divide los datos, porque IndexedDB es por dominio, y confunde.
 
 ---
@@ -198,7 +198,42 @@ Cambios de código:
 - Prueba sin conexión.
 - Tag `v1.0.0`. **Rollback:** `git revert` + push (Pages redeploya solo).
 
-### Fase 7 — Solo si aparece la necesidad (no planificada)
+### Fase 7 — Importación flexible y planilla principal
+
+**Objetivo:** que un archivo futuro con otras columnas o encabezados se pueda leer, normalizar y revisar, y recién ahí combinar con el resto.
+
+**Reglas de negocio (decididas por el usuario, 18/09/2026):**
+
+1. **Identidad = "INTERNO DOMINIO".** Por ejemplo `TR21 AD291BF`. Todo se asocia a esa combinación:
+   - `TR-21`, `TR 21` y `TR21` son el mismo interno;
+   - la patente se normaliza igual.
+2. **Manda la planilla principal.** Por defecto es la de combustible (Cargas). **Solo se analiza lo que está cargado en ella**:
+   - un equipo del maestro sin registros en la planilla principal no entra al análisis;
+   - no desaparece: se lista aparte, con su actividad GPS, para que no se pierda en silencio.
+3. **La planilla principal puede ser otra.** Por ejemplo cubiertas u otro bien, siempre que traiga "interno dominio". La misma regla aplica: el universo del análisis son las identidades presentes en ella.
+
+**Impacto medido antes de implementar (datos reales, enero–agosto 2026):**
+
+| Medición | Valor |
+|---|---|
+| Equipos del maestro con cargas en el período | 78 de 183 |
+| Equipos con GPS pero sin ninguna carga (sobre todo cargadoras CF) | 46, con 478.439 km. Salen del análisis y quedan listados aparte |
+| Cargas sin dominio (solo interno) | 680 |
+| Internos con dos patentes distintas en Cargas | 2 (MX59 `ONK194`/`OKN194`, BM14 `GNG59`/`GNC59`), probables errores de tipeo |
+
+**Pasos:**
+
+| Paso | Qué hace |
+|---|---|
+| 7a | **Detección por puntaje con sinónimos.** Los formatos conocidos se siguen detectando igual. Si un archivo no coincide exacto pero se parece a uno (por ejemplo `HP` en vez de `POTENCIA`), no se importa en silencio: pasa a la vista previa. |
+| 7b | **Vista previa y mapeo antes de importar.** Por columna muestra el dato al que corresponde, valores de ejemplo y el formato detectado (fecha, número, horas, texto). El usuario confirma o corrige el tipo y cada columna. |
+| 7c | **Memoria por formato.** El mapeo confirmado se guarda con la "firma" del archivo (su conjunto de encabezados). Ese formato entra solo la próxima vez. |
+| 7d | **Planilla principal e identidad.** Se elige en Configuración (por defecto Cargas). El análisis se restringe a las identidades presentes en ella. Si la principal no es combustible, el panel muestra un análisis genérico por "INTERNO DOMINIO" (cantidad y totales de cada columna numérica). |
+| 7e | **Combinación con control.** Un archivo mapeado como Cargas que se superpone con cargas ya existentes (misma fecha, interno y litros) se marca como probable duplicado. Por defecto queda aparte y no suma litros. |
+
+**Verificación:** un arnés nuevo sin datos reales (`tools/probar-importacion.mjs`) prueba planillas inventadas con columnas renombradas o faltantes, la memoria de mapeo, el universo de la planilla principal y una principal genérica (cubiertas). Corre también en CI. Los tres arneses con datos reales tienen que seguir en verde. La referencia se actualiza **solo** por el cambio de universo, con el antes y el después documentados.
+
+### Fase 8 — Solo si aparece la necesidad (no planificada)
 - Varias personas con los mismos datos en tiempo real → evaluar un backend con base (Supabase o Cloudflare D1, gratis) **con login real**. Implica que los datos salen de la PC y hay que decidirlo explícitamente.
 - IA remota → sección 5, "IA remota".
 - Tabulator/Chart.js → solo con una decisión operativa concreta que lo justifique.
@@ -247,3 +282,19 @@ Puntos que merecen quedar acá, no solo en el documento de su fase:
 - **El smoke test con datos reales (Fase 6) encontró 3 bugs de CSS en la vista móvil** que ningún arnés podía ver (no tienen DOM) y que las Fases 2–5 tampoco vieron (se probaron mayormente con la base vacía). Quedan corregidos — detalle en `docs/FASE-6-RELEASE.md`.
 - **El repo quedó limpio**: sin planillas, sin `.env`, sin `node_modules` comiteado; `git status` en cero antes de cada commit de fase.
 - **Falta hacer, no bloquea el release:** probar contra una instalación real de Ollama (se probó con `fetch` interceptado) y un "modo avión" real de navegador (se probó por inspección del Cache Storage).
+
+### Fase 7 — 18/09/2026 · completada
+
+Detalle en [`docs/FASE-7-IMPORTACION.md`](docs/FASE-7-IMPORTACION.md).
+
+- **Importación flexible.** Un archivo que no coincide exacto pasa por la vista previa de columnas (tipo sugerido, formato y ejemplos por columna). El formato confirmado se recuerda por su firma de encabezados.
+- **Manda la planilla principal.** Se analizan **84** equipos (antes 189). Los 105 restantes del maestro quedan listados en un hallazgo propio; 46 de ellos tienen GPS pero ninguna carga (478.439 km).
+- **Litros, cargas y equipos sobre meta sin cambio.** Los km y las horas bajan porque ya no cuentan equipos que no figuran en Cargas. La referencia vieja quedó guardada aparte.
+- **Planilla principal elegible en Configuración.** Si no es combustible (por ejemplo cubiertas), el panel muestra por "interno dominio" la cantidad y los totales de cada columna.
+- **Duplicados de Cargas (caso GRIS).** Se detectan también cuando el formato ya estaba recordado, y por defecto se guardan aparte.
+- **Errores corregidos:**
+  - `TR-21 AD291BF` perdía la patente;
+  - una planilla de cubiertas se sugería como combustible;
+  - un formato recordado duplicaba litros a ciegas;
+  - el número de fila se sumaba como dato.
+- **Arnés nuevo `npm run importacion`**: 46 chequeos con planillas inventadas, corre en CI. Los cuatro arneses en verde.

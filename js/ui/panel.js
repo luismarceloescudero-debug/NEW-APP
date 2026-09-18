@@ -4,7 +4,7 @@
  * Todo número mostrado acá registra sus pasos de cálculo (ver calcpopover.js): al hacer
  * click en cualquier KPI o métrica de una tarjeta se abre el detalle de cómo se obtuvo.
  */
-import { getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, editarCampoEquipo, getRalentiEstados, setRalentiEstado, quitarRalentiEstado, crearReclamoGPS, getReclamosGPS, actualizarReclamoGPS, getNoFlotaAceptados, setNoFlotaAceptado, quitarNoFlotaAceptado, getEquiposExcluidos, setEquipoExcluido, quitarEquipoExcluido, updateRawRecord, registrarEdicion, saveCorreccionCarga, huellaCarga, getPrefijosNoFlota, agregarPrefijoNoFlota, quitarPrefijoNoFlota, getSeguimientoEquipos, setSeguimientoEquipo, setSeguimientoRangos, quitarSeguimientoEquipo, getActividadEstimada, setActividadEstimada, quitarActividadEstimada, deleteRawRecord, getAccionesAutomaticas, getReferentesMeta, setReferentesMeta } from '../data/database.js';
+import { getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, editarCampoEquipo, getRalentiEstados, setRalentiEstado, quitarRalentiEstado, crearReclamoGPS, getReclamosGPS, actualizarReclamoGPS, getNoFlotaAceptados, setNoFlotaAceptado, quitarNoFlotaAceptado, getEquiposExcluidos, setEquipoExcluido, quitarEquipoExcluido, updateRawRecord, registrarEdicion, saveCorreccionCarga, huellaCarga, getPrefijosNoFlota, agregarPrefijoNoFlota, quitarPrefijoNoFlota, getSeguimientoEquipos, setSeguimientoEquipo, setSeguimientoRangos, quitarSeguimientoEquipo, getActividadEstimada, setActividadEstimada, quitarActividadEstimada, deleteRawRecord, getAccionesAutomaticas, getReferentesMeta, setReferentesMeta, getPlanillaPrincipal } from '../data/database.js';
 import { analizarFlota, periodosDisponibles, periodosAnalisisAutomatico, resumirMovimientosGenericos, registroVacio, mesesDeRegistro } from '../data/analyzer.js';
 import { generarDiagnostico, sugerirMeta, evolucionMensual, categoriaRalenti, actividadImplicita, coberturaEquipo, completitudDatos, mesesFueraDeServicio, causaMetaRara, estimacionCreible, NIVELES_COMPLETITUD, coberturaMensual, resolverEquipo, investigarMeta, potenciaEquipo, auditarCalidadCargas, detectarPrefijosNuevos, CLASES_NO_FLOTA, cadenciaCargas, consumoDesdeActividadDeclarada, mediana, utilizacion, metaDesdeConsumoReal, parIdentico } from '../data/diagnostico.js';
 import { TIPO_POR_PREFIJO, MESES, getBandera, tipoLugarCarga, formatFechaAR, normalizeEquipoKey, getDenominacion } from '../data/normalizer.js';
@@ -14,6 +14,7 @@ import { openUnitModal } from './modals.js';
 import { abrirAjusteMetas } from './metas.js';
 import { abrirComparativa } from './comparativa.js';
 import { registrarCalculo, limpiarCalculos } from './calcpopover.js';
+import { renderPanelGenerico } from './panel-generico.js';
 
 const view = {
     busqueda: '', denominacion: 'ALL', estado: 'ALL', orden: 'litros',
@@ -337,7 +338,9 @@ export async function renderPanel() {
 
         limpiarCalculos();
         const filtroActivo = { anio: view.anio || null, periodos: [...view.meses] };
-        ultimoAnalisis = analizarFlota({ equipos, rawRecords, estimados, filtro: filtroActivo });
+        // Qué planilla manda el análisis (Fase 7): por defecto Cargas de Combustible.
+        const principal = await getPlanillaPrincipal().catch(() => 'carga');
+        ultimoAnalisis = analizarFlota({ equipos, rawRecords, estimados, filtro: filtroActivo, principal });
 
         // Diagnóstico automático que se resuelve solo (ver autocorreccion.js): dar de alta un
         // interno nuevo, aceptar un código no identificable, alinear una meta vacía al consumo
@@ -355,7 +358,7 @@ export async function renderPanel() {
             datosCrudos = { equipos: equiposFrescos, rawRecords, estimados };
             noFlotaAceptadosCache = noFlotaFrescos;
             accionesAutomaticasCache = accionesFrescas;
-            ultimoAnalisis = analizarFlota({ equipos: equiposFrescos, rawRecords, estimados, filtro: filtroActivo });
+            ultimoAnalisis = analizarFlota({ equipos: equiposFrescos, rawRecords, estimados, filtro: filtroActivo, principal });
             fuentes.equipos = equiposFrescos.length;
         }
 
@@ -376,6 +379,15 @@ window.abrirActividadEstimada = (internos) => abrirActividadEstimada(internos, u
         // desde "Códigos válidos así" si vuelven a ser un problema.
         const periodoActual = periodoDeAnalisis(ultimoAnalisis);
         ralentiEstadosCache = ralentiEstadosCache.filter(r => periodosCoinciden(r.periodo, periodoActual));
+
+        // Planilla principal que no es combustible (Fase 7): no hay litros ni consumo, se
+        // muestra el análisis por "interno dominio" de esa planilla. El diagnóstico se mantiene
+        // (incluye quiénes quedaron fuera del universo y las identidades inconsistentes).
+        if (principal !== 'carga') {
+            renderPanelGenerico(kpiEl, cardsEl, ultimoAnalisis, principal);
+            renderDiagnostico(ultimoAnalisis, rawRecords);
+            return;
+        }
 
         renderKPIs(kpiEl, ultimoAnalisis.totales, fuentes);
         renderDiagnostico(ultimoAnalisis, rawRecords);

@@ -69,6 +69,9 @@ jobs:
       - name: npm run declarados
         run: npm run declarados
 
+      - name: npm run importacion (Fase 7, planillas inventadas)
+        run: npm run importacion
+
       # `verificar` y `auditar` necesitan las planillas reales de la flota (FLOTACONTROL_ARCHIVOS)
       # y una referencia privada (FLOTACONTROL_INVARIANTES): a propósito nunca viven en este
       # repositorio público, así que no pueden correr en CI. Se corren a mano antes de cada

@@ -6,7 +6,7 @@ Anthropic. **No se despliega ni se usa en el release actual.** El asistente de l
 [`../../docs/DEPLOYMENT.md`](../../docs/DEPLOYMENT.md).
 
 Esta carpeta queda como referencia para quien quiera reactivar un proveedor remoto más
-adelante (PLAN4.md, sección 5 y Fase 7). Antes de reactivarla:
+adelante (PLAN4.md, sección 5 y Fase 8). Antes de reactivarla:
 
 - Necesita un hosting con funciones serverless y uso comercial permitido (Vercel Hobby es
   solo para uso personal/no comercial; ver PLAN4.md sección 2).

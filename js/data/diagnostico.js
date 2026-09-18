@@ -2177,6 +2177,64 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
         });
     }
 
+    // ---------- 8a-bis. Equipos del maestro fuera de la planilla principal (Fase 7) ----------
+    // Regla del usuario: manda la planilla principal (por defecto Cargas) y solo se analiza lo
+    // que está cargado en ella. Los equipos del maestro que no figuran ahí salen de tarjetas y
+    // KPI — este hallazgo es lo que evita que eso pase en silencio. Primero los que SÍ tienen
+    // actividad GPS: un equipo que recorrió miles de km sin una sola carga casi seguro carga
+    // bajo otro código (patente sola, interno mal tipeado) o desde un tanque que no está en la
+    // planilla — medido en 2026: 46 equipos, 478.439 km.
+    const universo = totales.universo || {};
+    const fueraPrincipal = universo.restringido ? (universo.fuera_principal || []) : [];
+    if (fueraPrincipal.length) {
+        const conGps = fueraPrincipal.filter(f => (f.gps || 0) > 0);
+        const kmFuera = conGps.reduce((s, f) => s + (f.km || 0), 0);
+        const nombrePrincipal = universo.principal === 'carga' ? 'Cargas de Combustible' : universo.principal;
+        hallazgos.push({
+            id: 'fuera_principal', severidad: conGps.length ? 'media' : 'baja', icono: 'fa-filter-circle-xmark',
+            no_comparar: true,
+            titulo: `${fueraPrincipal.length} equipo${fueraPrincipal.length === 1 ? '' : 's'} del maestro no figura${fueraPrincipal.length === 1 ? '' : 'n'} en ${nombrePrincipal}: no se analiza${fueraPrincipal.length === 1 ? '' : 'n'}` +
+                (conGps.length ? ` (${conGps.length} con GPS, ${fmt(kmFuera)} km)` : ''),
+            detalle: `Manda la planilla principal (<strong>${esc(nombrePrincipal)}</strong>): solo se analiza lo que está cargado en ella, identificado por <strong>interno + dominio</strong>. ` +
+                `Estos equipos están en el maestro pero no tienen ningún registro en esa planilla dentro del período, así que no aparecen en las tarjetas ni suman a los KPI. ` +
+                (conGps.length
+                    ? `<strong>Revisar primero los que tienen GPS</strong>: si recorrieron kilómetros y no tienen ninguna carga, lo más probable es que carguen bajo otro código (solo la patente, o un interno mal escrito) o desde un tanque propio que no figura en la planilla.`
+                    : 'Ninguno tiene actividad GPS en el período.'),
+            equipos: fueraPrincipal.slice(0, 30).map(f => ({
+                interno: f.interno, denominacion: f.identidad || f.denominacion || '',
+                texto: f.gps ? `${fmt(f.km)} km · ${fmt(f.horas, 1)} hs de GPS` : 'sin actividad en el período',
+                sub: `${f.denominacion || ''}${f.gps ? ' · sin ninguna carga: ¿carga con otro código?' : ''}`
+            }))
+        });
+    }
+
+    // ---------- 8a-ter. Mismo interno con más de un dominio en la planilla principal ----------
+    // La identidad es "INTERNO DOMINIO": si un interno aparece con dos patentes distintas, una
+    // de las dos está mal escrita (medido en 2026: MX59 ONK194/OKN194, BM14 GNG59/GNC59). Hoy se
+    // cruza igual porque el interno coincide, pero la patente mal tipeada queda en la planilla y
+    // rompe el cruce el día que una fila traiga solo la patente.
+    const tipoPrincipal = universo.principal || 'carga';
+    const dominiosPorInterno = new Map();
+    rawRecords.filter(r => r.type === tipoPrincipal && !registroVacio(r) && r.interno_key && r.dominio_key).forEach(r => {
+        if (!dominiosPorInterno.has(r.interno_key)) dominiosPorInterno.set(r.interno_key, { interno: r.interno, dominios: new Map() });
+        const d = dominiosPorInterno.get(r.interno_key).dominios;
+        d.set(r.dominio, (d.get(r.dominio) || 0) + 1);
+    });
+    const multiDominio = [...dominiosPorInterno.values()].filter(x => x.dominios.size > 1);
+    if (multiDominio.length) {
+        hallazgos.push({
+            id: 'identidad_inconsistente', severidad: 'media', icono: 'fa-id-card',
+            no_comparar: true,
+            titulo: `${multiDominio.length} interno${multiDominio.length === 1 ? '' : 's'} con más de una patente en la planilla principal`,
+            detalle: 'Cada equipo es un <strong>interno + dominio</strong>. Estos internos aparecen con dos o más patentes distintas: casi siempre es un error de tipeo en la planilla (una letra cambiada). Se siguen cruzando por el interno, pero conviene corregir la patente en origen.',
+            equipos: multiDominio.map(x => ({
+                interno: x.interno, denominacion: '',
+                texto: [...x.dominios.entries()].sort((a, b) => b[1] - a[1]).map(([d, n]) => `${d} (${n})`).join(' · '),
+                sub: 'patente (cantidad de filas con esa patente)'
+            }))
+        });
+    }
+
     // ---------- 8b. Prefijos nuevos de Mendoza, para dar de alta en la base oficial ----------
     // Distinto del hallazgo anterior: ese agrupa TODO lo huérfano (incluidos vehículos con
     // patente y prefijos ya conocidos como CL o MT que solo faltan en el padrón); este filtra

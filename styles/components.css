@@ -334,3 +334,35 @@ input[type="date"]::-webkit-calendar-picker-indicator {
 .ai-status-muted { background: rgba(148,163,184,0.15); color: var(--text-muted); }
 .ai-status-ok { background: rgba(16,185,129,0.15); color: var(--accent-green); }
 .ai-status-checking { background: rgba(59,130,246,0.15); color: var(--accent-blue); }
+
+/* ============================================================ */
+/* VISTA PREVIA Y MAPEO DE COLUMNAS (Fase 7)                     */
+/* ============================================================ */
+
+.mapeo-modal { max-width: 920px; width: 96vw; }
+.mapeo-intro { font-size: 0.88rem; color: var(--text-secondary); line-height: 1.55; margin-bottom: 0.9rem; }
+.mapeo-alerta, .mapeo-info {
+    font-size: 0.85rem; border-radius: 8px; padding: 0.6rem 0.8rem; margin: 0 0 0.8rem; line-height: 1.5;
+}
+.mapeo-alerta { color: var(--accent-amber); background: rgba(245, 158, 11, 0.08); }
+.mapeo-info { color: var(--text-secondary); background: var(--bg-input); }
+.mapeo-fila { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; flex-wrap: wrap; }
+.mapeo-fila label { font-size: 0.85rem; color: var(--text-secondary); min-width: 150px; }
+.mapeo-fila select, .mapeo-fila input, .mapeo-tabla select {
+    flex: 1; min-width: 0; max-width: 100%; padding: 0.45rem 0.55rem; border-radius: 6px;
+    border: 1px solid var(--border-color); background: var(--bg-input); color: var(--text-primary);
+}
+.mapeo-tabla-wrap { overflow-x: auto; max-height: 48vh; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 8px; margin-bottom: 0.8rem; }
+.mapeo-tabla { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+.mapeo-tabla th { position: sticky; top: 0; background: var(--bg-secondary); text-align: left; padding: 0.5rem; color: var(--text-secondary); font-weight: 600; }
+.mapeo-tabla td { padding: 0.45rem 0.5rem; border-top: 1px solid var(--border-color); vertical-align: middle; }
+.mapeo-header { font-weight: 600; color: var(--text-primary); }
+.mapeo-formato { display: inline-block; padding: 0.1rem 0.45rem; border-radius: 999px; font-size: 0.72rem; font-weight: 600; background: rgba(148,163,184,0.15); color: var(--text-secondary); }
+.mapeo-formato + small { display: block; color: var(--text-muted); font-size: 0.7rem; margin-top: 0.15rem; }
+.mapeo-formato-identidad { background: rgba(6,182,212,0.15); color: var(--accent-cyan); }
+.mapeo-formato-fecha { background: rgba(139,92,246,0.15); color: var(--accent-purple); }
+.mapeo-formato-numero, .mapeo-formato-horas { background: rgba(16,185,129,0.15); color: var(--accent-green); }
+.mapeo-ejemplos span { display: inline-block; margin: 0 0.3rem 0.2rem 0; padding: 0.05rem 0.35rem; background: var(--bg-input); border-radius: 4px; color: var(--text-secondary); font-family: ui-monospace, monospace; font-size: 0.75rem; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; }
+.mapeo-check, .mapeo-radio { display: flex; align-items: flex-start; gap: 0.5rem; font-size: 0.85rem; color: var(--text-secondary); margin: 0.4rem 0; cursor: pointer; }
+.mapeo-botones { display: flex; justify-content: flex-end; gap: 0.6rem; margin-top: 1rem; flex-wrap: wrap; }
+.mapeo-botones button:disabled { opacity: 0.5; cursor: not-allowed; }

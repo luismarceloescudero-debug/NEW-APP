@@ -9,12 +9,22 @@
  * de este navegador (js/ai/ollama.js) — nunca en el repo, nunca en ningún servidor.
  */
 import { getOllamaConfig, setOllamaConfig, isAvailable, listModels } from '../ai/ollama.js';
+import { getPlanillaPrincipal, setPlanillaPrincipal, getTiposDeMovimiento } from '../data/database.js';
 
-export function openConfigModal() {
+// Tipos que nunca pueden ser planilla principal: el GPS mide actividad, no un bien que se
+// carga; las comparativas y los duplicados marcados no son fuente propia.
+const NO_PRINCIPAL = new Set(['gps', 'carga', 'entrega']);
+
+export async function openConfigModal() {
     let container = document.getElementById('modals-container');
     if (!container) return;
 
     const { baseUrl, model } = getOllamaConfig();
+    const principal = await getPlanillaPrincipal().catch(() => 'carga');
+    const tipos = (await getTiposDeMovimiento().catch(() => []))
+        .filter(t => !NO_PRINCIPAL.has(t.tipo) && !t.posibleDuplicadoCargas && !t.resumenDerivable);
+    const opcionesPrincipal = [{ tipo: 'carga', etiqueta: 'Cargas de Combustible' }, ...tipos]
+        .map(t => `<option value="${esc(t.tipo)}" ${t.tipo === principal ? 'selected' : ''}>${esc(t.etiqueta)}${t.n ? ` (${t.n} filas)` : ''}</option>`).join('');
 
     const modalHTML = `
         <div class="modal-overlay active" id="config-modal">
@@ -24,6 +34,16 @@ export function openConfigModal() {
                     <button class="btn-close" id="btn-cerrar-config"><i class="fa-solid fa-xmark"></i></button>
                 </div>
                 <div class="modal-body">
+                    <div style="margin-bottom: 1.5rem; padding-bottom: 1.25rem; border-bottom: 1px solid var(--border-color);">
+                        <label for="cfg-principal" style="display:block; margin-bottom: 0.5rem; color: var(--text-secondary);">Planilla principal del análisis</label>
+                        <p style="font-size:0.8rem; color:var(--text-muted); margin-bottom:0.6rem;">
+                            Manda esta planilla: solo se analizan los equipos (<strong>interno + dominio</strong>) que figuran en ella.
+                            Los del maestro que no figuran se listan aparte en el diagnóstico. Puede ser otra planilla
+                            importada (cubiertas, otro bien) siempre que traiga interno y dominio.
+                        </p>
+                        <select id="cfg-principal" style="width:100%; padding:0.5rem; border-radius:6px; border:1px solid var(--border-color); background:var(--bg-input); color:var(--text-primary);">${opcionesPrincipal}</select>
+                        <div id="cfg-principal-resultado" style="font-size:0.85rem; margin-top:0.5rem;"></div>
+                    </div>
                     <div style="margin-bottom: 1.25rem;">
                         <label style="display:block; margin-bottom: 0.5rem; color: var(--text-secondary);">Asistente IA — Ollama</label>
                         <p style="font-size:0.8rem; color:var(--text-muted); margin-bottom:0.75rem;">
@@ -56,6 +76,17 @@ export function openConfigModal() {
     container.insertAdjacentHTML('beforeend', modalHTML);
     document.getElementById('btn-cerrar-config')?.addEventListener('click', () => {
         document.getElementById('config-modal')?.remove();
+    });
+
+    document.getElementById('cfg-principal')?.addEventListener('change', async (e) => {
+        const r = document.getElementById('cfg-principal-resultado');
+        try {
+            await setPlanillaPrincipal(e.target.value);
+            r.innerHTML = '<span style="color:var(--accent-green)"><i class="fa-solid fa-check"></i> Guardado. El panel se recalcula con esta planilla.</span>';
+            await window.renderPanel?.();
+        } catch (err) {
+            r.innerHTML = `<span style="color:var(--accent-red)"><i class="fa-solid fa-triangle-exclamation"></i> ${esc(err.message)}</span>`;
+        }
     });
 
     const resultEl = document.getElementById('cfg-ollama-resultado');

@@ -12,7 +12,7 @@
  *    de origen. La UI los muestra al hacer click, así ningún total es una caja negra.
  */
 
-import { normalizeEquipoKey, getPrefijo, getDenominacion, partesFecha, getProvincia, getNombreCentroCosto, tipoLugarCarga, getBandera } from './normalizer.js';
+import { normalizeEquipoKey, identidadTexto, getPrefijo, getDenominacion, partesFecha, getProvincia, getNombreCentroCosto, tipoLugarCarga, getBandera } from './normalizer.js';
 import { diasHabiles } from './feriados.js';
 
 export const RULE_L_100KM = ['TR', 'CM', 'CH', 'FG', 'AU'];
@@ -769,7 +769,7 @@ export function getGPSForEquipo(interno, rawRecords = []) {
  * Análisis completo de la flota en una sola pasada, con trazabilidad.
  * @param {Object} opts.filtro  { anio, mes, desde, hasta } — filtros de período
  */
-export function analizarFlota({ equipos = [], rawRecords = [], estimados = [], filtro = {} } = {}) {
+export function analizarFlota({ equipos = [], rawRecords = [], estimados = [], filtro = {}, principal = 'carga' } = {}) {
     const idx = indexarMaestro(equipos);
 
     // Los registros en cero se sacan ANTES de calcular el período: si no, un equipo con una
@@ -889,6 +889,39 @@ export function analizarFlota({ equipos = [], rawRecords = [], estimados = [], f
         automatico: !usaFiltroManual
     };
 
+    // ---- Universo del análisis: manda la planilla principal (Fase 7, regla del usuario) ----
+    // Solo se analizan los equipos que tienen al menos un registro en la planilla principal
+    // dentro del período (por defecto Cargas de Combustible; puede ser otra, ej. cubiertas,
+    // mientras traiga "interno dominio"). Un equipo del maestro que no figura ahí no entra a
+    // las tarjetas ni a los KPI — pero no desaparece: queda en `fuera_principal`, con su
+    // actividad GPS, y el diagnóstico lo lista aparte.
+    // Si la planilla principal no está cargada todavía, no se restringe nada (el panel ya avisa
+    // "Falta procesar ..."): restringir contra una planilla ausente dejaría el panel vacío.
+    const registrosPrincipal = principal === 'carga' ? cargas : otros.filter(r => r.type === principal);
+    const universo = new Set();
+    registrosPrincipal.forEach(r => { const eq = resolverEquipo(r, idx); if (eq) universo.add(eq.interno); });
+    const hayPrincipal = (principal === 'carga' ? allCargas : allOtros.filter(r => r.type === principal)).length > 0;
+    const restringido = hayPrincipal;
+    const enUniverso = r => { const eq = resolverEquipo(r, idx); return !eq || universo.has(eq.interno); };
+    const fueraPrincipalMap = new Map();
+    if (restringido) {
+        const apartar = (lista, campo) => lista.filter(r => {
+            if (enUniverso(r)) return true;
+            const eq = resolverEquipo(r, idx);
+            if (!fueraPrincipalMap.has(eq.interno)) fueraPrincipalMap.set(eq.interno, { interno: eq.interno, dominio: eq.dominio || '', identidad: identidadTexto(eq.interno, eq.dominio), denominacion: eq.denominacion || getDenominacion(eq.interno, eq.tipo), cargas: 0, gps: 0, otros: 0, km: 0, horas: 0 });
+            const f = fueraPrincipalMap.get(eq.interno);
+            f[campo]++;
+            if (campo === 'gps') {
+                f.km += parseFloat(r.distancia) || 0;
+                f.horas += (r.horas && typeof r.horas === 'object') ? (r.horas.total || 0) : (parseFloat(r.horas) || 0);
+            }
+            return false;
+        });
+        cargas = apartar(cargas, 'cargas');
+        gps = apartar(gps, 'gps');
+        otros = apartar(otros, 'otros');
+    }
+
     // Agrupar movimientos por equipo del maestro, resolviendo por interno O por dominio.
     const porEquipo = new Map();      // clave del maestro -> {cargas, gps, otros}
     const huerfanosMap = new Map();   // registros que no matchean ningún equipo
@@ -928,12 +961,13 @@ export function analizarFlota({ equipos = [], rawRecords = [], estimados = [], f
     gps.forEach(r => asignar(r, 'gps'));
     otros.forEach(r => asignar(r, 'otros'));
 
-    const filas = equipos.map(eq => {
+    const filas = equipos.filter(eq => !restringido || universo.has(eq.interno)).map(eq => {
         const g = porEquipo.get(eq.interno) || { cargas: [], gps: [], otros: [] };
         const confirmed = getConfirmedConsumption(eq, estimados);
         const metrics = calculateMetrics(eq, g.cargas, g.gps, confirmed, g.otros);
         return {
             equipo: { ...eq, denominacion: eq.denominacion || getDenominacion(eq.interno, eq.tipo) },
+            identidad: identidadTexto(eq.interno, eq.dominio),
             prefijo: getPrefijo(eq.interno),
             metrics, confirmed,
             ubicacion: resumenUbicacion(eq, g.cargas),
@@ -996,6 +1030,15 @@ export function analizarFlota({ equipos = [], rawRecords = [], estimados = [], f
         periodo_desde: start, periodo_hasta: end, periodos_analisis: periodosAnalisis,
         criterio_periodo: criterioPeriodo,
         equipos: equipos.length,
+        // Universo del análisis (Fase 7): qué planilla manda, si se restringió, y qué equipos del
+        // maestro quedaron afuera por no figurar en ella (con su GPS, para que no se pierdan).
+        equipos_analizados: filas.length,
+        universo: {
+            principal, restringido, analizados: filas.length,
+            fuera_principal: !restringido ? [] : equipos.filter(eq => !universo.has(eq.interno)).map(eq =>
+                fueraPrincipalMap.get(eq.interno) || { interno: eq.interno, dominio: eq.dominio || '', identidad: identidadTexto(eq.interno, eq.dominio), denominacion: eq.denominacion || getDenominacion(eq.interno, eq.tipo), cargas: 0, gps: 0, otros: 0, km: 0, horas: 0 }
+            ).sort((a, b) => b.km - a.km || a.interno.localeCompare(b.interno))
+        },
         equipos_con_datos: filas.filter(f => f.metrics.cantidad_cargas > 0 || f.metrics.cantidad_gps > 0).length,
         registros_descartados: descartados,
         total_litros: litrosTot, total_costo: costoTot, total_km: kmTot,

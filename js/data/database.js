@@ -299,6 +299,19 @@ export function setColumnasExtra(cols) {
     return writeTx(['config'], ([store]) => { store.put({ k: COLS_KEY, v: cols }); return cols; });
 }
 
+// ---- Planilla principal (Fase 7) ----
+// Qué planilla manda el análisis: 'carga' (Cargas de Combustible, por defecto) o el tipo de
+// cualquier otra planilla importada que traiga interno + dominio (ej. cubiertas). Ver el
+// comentario de "Universo del análisis" en analizarFlota().
+const PRINCIPAL_KEY = 'planilla_principal';
+export async function getPlanillaPrincipal() {
+    const r = await readOne('config', PRINCIPAL_KEY);
+    return (r && r.v) || 'carga';
+}
+export function setPlanillaPrincipal(tipo) {
+    return writeTx(['config'], ([store]) => { store.put({ k: PRINCIPAL_KEY, v: tipo || 'carga' }); });
+}
+
 // ============================ MAPEOS DE COLUMNAS ============================
 
 /**
@@ -307,6 +320,15 @@ export function setColumnasExtra(cols) {
  */
 export function getMapeo(tipo) { return readOne('mapeos', tipo); }
 export function getAllMapeos() { return readAll('mapeos'); }
+/**
+ * Mapeo recordado por FORMATO de archivo (Fase 7): la clave es la firma de sus encabezados
+ * ("firma:xxxx", ver parsers/esquemas.js), no el tipo. Guarda a qué tipo se importa
+ * (destino), con qué nombre, desde qué fila está el encabezado y qué columna es cada campo.
+ * Vive en el mismo store "mapeos" (keyPath "tipo") para no necesitar una versión nueva de la base.
+ */
+export function saveMapeoFirma(firma, datos) {
+    return writeTx(['mapeos'], ([store]) => { store.put({ ...datos, tipo: firma, actualizado: new Date().toISOString() }); });
+}
 export function saveMapeo(tipo, columnas) {
     return writeTx(['mapeos'], ([store]) => { store.put({ tipo, columnas, actualizado: new Date().toISOString() }); });
 }

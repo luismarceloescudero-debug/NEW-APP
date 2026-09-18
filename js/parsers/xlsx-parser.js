@@ -15,8 +15,9 @@
  */
 import {
     upsertEquipos, insertRawRecords, insertEstimados, insertPrecios, registrarArchivo, getMapeo,
-    insertEntregasLoop
+    insertEntregasLoop, saveMapeoFirma, getAllRawRecords
 } from '../data/database.js';
+import { ESQUEMAS, puntuarEsquemas, firmaEncabezados, detectarFormatoColumna } from './esquemas.js';
 import {
     parseDate, parseNumber, normalizeString, normalizeEquipoKey, aggregateHours, parseExcelHours,
     getDenominacion, parseConsumoEstimado, extraerIdentidad, partesFecha, slugCampo, parseHoraDeFecha
@@ -25,12 +26,126 @@ import {
 // Nombres de columna que identifican al equipo, en orden de preferencia.
 const COLS_IDENTIDAD = ['INTERNO-DOMINIO', 'INTERNO', 'UNIDAD', 'MOVIL', 'EQUIPO', 'DOMINIO', 'PATENTE', 'MATRICULA', 'VEHICULO'];
 
-export async function parseXLSX(file) {
+function leerArchivo(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (e) => resolve(new Uint8Array(e.target.result));
+        reader.onerror = reject;
+        reader.readAsArrayBuffer(file);
+    });
+}
+
+function primeraHoja(data) {
+    const workbook = XLSX.read(data, { type: 'array' });
+    return XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { header: 1, defval: '' });
+}
+
+/** Fila de encabezado cuando no apareció ninguna con columna de identidad: la primera con 3+ celdas. */
+function filaEncabezadoFallback(rawRows) {
+    return rawRows.findIndex(r => r.filter(c => c !== '' && c !== null).length >= 3);
+}
+
+// Tipos que tienen un importador propio (con su cálculo). Todo lo demás es "otra planilla"
+// y entra por el importador genérico.
+const TIPOS_CON_IMPORTADOR = new Set(['EQUIPOS', 'ESTIMADOS', 'CARGAS', 'GPS', 'GPS_RESUMEN_VIAJE', 'ENTREGAS_LOOP']);
+
+/**
+ * Fase 7 — mira el archivo SIN guardar nada y dice qué entendió:
+ *   estado 'reconocido' → coincide exacto con un formato conocido: se importa directo, como siempre.
+ *   estado 'recordado'  → no es un formato conocido, pero ese mismo formato (misma firma de
+ *                          encabezados) ya se confirmó antes: se importa directo con ese mapeo.
+ *   estado 'revisar'    → no coincide exacto: la UI muestra la vista previa para que el usuario
+ *                          confirme el tipo y las columnas antes de combinar nada.
+ *   estado 'vacio'      → no hay nada que importar.
+ * Incluye, por columna: formato detectado, 3 ejemplos, y los puntajes contra cada tipo conocido.
+ */
+export async function inspeccionarArchivo(file) {
+    const rawRows = primeraHoja(await leerArchivo(file));
+    if (!rawRows.length) return { filename: file.name, estado: 'vacio', motivo: 'El archivo está vacío.' };
+
+    const det = detectarFormato(rawRows, file.name);
+    // Sin ninguna fila con columna de interno/dominio igual se ofrece la vista previa: la
+    // identidad puede venir con un nombre que la app no conoce ("N° Móvil") y el usuario la elige.
+    let headerRowIdx = det.headerRowIdx !== -1 ? det.headerRowIdx : filaEncabezadoFallback(rawRows);
+    if (headerRowIdx === -1) return { filename: file.name, estado: 'vacio', motivo: 'No se encontró ninguna fila de encabezados.' };
+
+    const headers = extraerHeaders(rawRows[headerRowIdx]).filter(Boolean);
+    const filas = filasComoObjetos(rawRows, headerRowIdx, extraerHeaders(rawRows[headerRowIdx]));
+    const firma = firmaEncabezados(headers);
+    const columnas = headers.map(h => {
+        const valores = filas.map(f => f[h]);
+        const noVacios = valores.filter(v => v !== '' && v !== null && v !== undefined);
+        return { header: h, ...detectarFormatoColumna(valores, h), ejemplos: noVacios.slice(0, 3).map(v => String(v)) };
+    });
+    const base = { filename: file.name, firma, headers, headerRowIdx, filasTotal: filas.length, columnas, puntajes: puntuarEsquemas(headers) };
+
+    if (!det.generico && det.headerRowIdx !== -1 && TIPOS_CON_IMPORTADOR.has(det.tipo)) {
+        return { ...base, estado: 'reconocido', tipo: det.tipo, etiqueta: det.etiqueta };
+    }
+    const recordado = await getMapeo(firma).catch(() => null);
+    if (recordado && recordado.destino) {
+        return { ...base, estado: 'recordado', tipo: recordado.destino, etiqueta: recordado.etiqueta, mapeo: recordado.columnas || {}, modo: recordado.modo || null };
+    }
+    // Se sugiere el tipo mejor puntuado que tenga todos sus campos obligatorios: uno que se
+    // parece más pero le falta lo esencial (ej. "Consumos Estimados" sin columna de meta) no
+    // sirve como sugerencia.
+    const mejor = base.puntajes.find(p => !p.faltantes.length);
+    return {
+        ...base, estado: 'revisar',
+        generico: { tipo: det.generico ? det.tipo : null, etiqueta: det.etiqueta || tituloDesdeArchivo(file.name) },
+        posibleDuplicadoCargas: !!det.posibleDuplicadoCargas,
+        sugerencia: mejor && mejor.puntaje >= 0.35 ? mejor.tipo : null
+    };
+}
+
+/**
+ * Cuántas filas de este archivo, leídas como Cargas con este mapeo, YA existen en las cargas
+ * guardadas (misma fecha + mismo interno o dominio + mismos litros a 1 decimal). Caso real: el
+ * reporte de la estación GRIS repetía cargas que ya estaban en la planilla global de
+ * combustible; importarlo como Cargas habría duplicado litros.
+ */
+export async function superposicionConCargas(file, headerRowIdx, mapeo = {}) {
+    const rawRows = primeraHoja(await leerArchivo(file));
+    return medirSuperposicion(filasComoObjetos(rawRows, headerRowIdx, extraerHeaders(rawRows[headerRowIdx] || [])), mapeo);
+}
+
+// Proporción de filas que ya existen como cargas a partir de la cual un archivo se considera
+// un duplicado de la planilla global (y se guarda aparte si nadie decidió lo contrario).
+export const UMBRAL_DUPLICADO_CARGAS = 0.2;
+
+async function medirSuperposicion(filas, mapeo = {}) {
+    const clave = (fecha, k, litros) => `${fecha}|${k}|${Math.round((parseFloat(litros) || 0) * 10) / 10}`;
+    const existentes = new Set();
+    (await getAllRawRecords()).filter(r => r.type === 'carga').forEach(r => {
+        if (r.interno_key) existentes.add(clave(r.fecha, r.interno_key, r.litros));
+        if (r.dominio_key) existentes.add(clave(r.fecha, r.dominio_key, r.litros));
+    });
+    let total = 0, coinciden = 0;
+    filas.forEach(row => {
+        const id = identidadDeFila(row, mapeo);
+        const fecha = parseDate(val(row, 'fecha', ['FECHA', 'DATE'], mapeo)) || '';
+        const litros = parseNumber(val(row, 'litros', ['LITROS', 'CANTIDAD'], mapeo));
+        if (!fecha || !(litros > 0) || (!id.interno_key && !id.dominio_key)) return;
+        total++;
+        if ((id.interno_key && existentes.has(clave(fecha, id.interno_key, litros))) ||
+            (id.dominio_key && existentes.has(clave(fecha, id.dominio_key, litros)))) coinciden++;
+    });
+    return { total, coinciden, proporcion: total ? coinciden / total : 0 };
+}
+
+/**
+ * Importa un archivo. Sin `decision` se comporta como siempre (formatos conocidos directo; lo
+ * demás por el importador genérico), salvo que ese formato ya tenga un mapeo recordado.
+ * Con `decision` = { tipo, etiqueta, mapeo, headerRowIdx, recordar, modo } aplica lo que el
+ * usuario confirmó en la vista previa. modo 'aparte' = guardar como planilla aparte, marcada
+ * como posible duplicado de Cargas (no suma al cálculo).
+ */
+export async function parseXLSX(file, decision = null) {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = async (e) => {
             try {
-                resolve(await procesarLibro(new Uint8Array(e.target.result), file.name));
+                resolve(await procesarLibro(new Uint8Array(e.target.result), file.name, decision));
             } catch (err) { reject(err); }
         };
         reader.onerror = reject;
@@ -38,13 +153,61 @@ export async function parseXLSX(file) {
     });
 }
 
-async function procesarLibro(data, filename) {
+async function procesarLibro(data, filename, decision = null) {
     const workbook = XLSX.read(data, { type: 'array' });
     const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
     const rawRows = XLSX.utils.sheet_to_json(firstSheet, { header: 1, defval: '' });
     if (!rawRows.length) throw new Error('El archivo está vacío');
 
     const det = detectarFormato(rawRows, filename);
+
+    // Fase 7: sin decisión explícita, un formato que no es conocido pero ya se confirmó antes
+    // (misma firma de encabezados) se importa con el mapeo recordado.
+    if (!decision && (det.generico || det.headerRowIdx === -1)) {
+        const idx = det.headerRowIdx !== -1 ? det.headerRowIdx : filaEncabezadoFallback(rawRows);
+        if (idx !== -1) {
+            const recordado = await getMapeo(firmaEncabezados(extraerHeaders(rawRows[idx]).filter(Boolean))).catch(() => null);
+            if (recordado && recordado.destino) {
+                decision = { tipo: recordado.destino, etiqueta: recordado.etiqueta, mapeo: recordado.columnas || {}, headerRowIdx: recordado.headerRowIdx ?? idx, modo: recordado.modo || null, desdeMemoria: true };
+            }
+        }
+    }
+    // Un formato recordado como "Cargas, incorporar al cálculo" NO se incorpora a ciegas: cada
+    // archivo nuevo se vuelve a comparar contra las cargas ya guardadas. Si repite una parte
+    // grande (caso GRIS: el reporte de la estación trae cargas que ya están en la planilla
+    // global), se guarda aparte. Solo una decisión explícita en la vista previa lo incorpora igual.
+    if (decision && decision.desdeMemoria && decision.tipo === 'CARGAS' && decision.modo !== 'aparte') {
+        const idx = decision.headerRowIdx;
+        const sup = await medirSuperposicion(filasComoObjetos(rawRows, idx, extraerHeaders(rawRows[idx] || [])), decision.mapeo || {});
+        if (sup.proporcion >= UMBRAL_DUPLICADO_CARGAS) {
+            console.warn(`[DUPLICADO] ${filename}: ${sup.coinciden} de ${sup.total} cargas ya existen — se guarda aparte, no suma litros`);
+            decision = { ...decision, modo: 'aparte', etiqueta: `${decision.etiqueta || tituloDesdeArchivo(filename)} (aparte)` };
+        }
+    }
+    let mapeoDecision = null;
+    if (decision) {
+        if (decision.headerRowIdx != null && decision.headerRowIdx >= 0) det.headerRowIdx = decision.headerRowIdx;
+        const esConocido = !!ESQUEMAS[decision.tipo] && decision.modo !== 'aparte';
+        if (esConocido) {
+            det.tipo = decision.tipo;
+            det.etiqueta = ESQUEMAS[decision.tipo].etiqueta;
+            det.generico = false;
+        } else {
+            // Otra planilla (cubiertas, insumos...) o cargas guardadas aparte: importador genérico.
+            det.etiqueta = decision.etiqueta || det.etiqueta || tituloDesdeArchivo(filename);
+            det.tipo = (!ESQUEMAS[decision.tipo] && decision.tipo) ? decision.tipo : slugCampo(det.etiqueta);
+            det.generico = true;
+            if (decision.modo === 'aparte') det.posibleDuplicadoCargas = true;
+        }
+        mapeoDecision = decision.mapeo || {};
+        if (decision.recordar) {
+            const hs = extraerHeaders(rawRows[det.headerRowIdx] || []).filter(Boolean);
+            await saveMapeoFirma(firmaEncabezados(hs), {
+                destino: det.tipo, etiqueta: det.etiqueta, columnas: mapeoDecision, headerRowIdx: det.headerRowIdx,
+                headers: hs, modo: decision.modo || null, archivo_ejemplo: filename
+            }).catch(e => console.warn('No se pudo recordar el formato:', e));
+        }
+    }
     if (det.headerRowIdx === -1) {
         return await registrar({ filename, tipo: 'DESCONOCIDO', filas: 0, motivo: 'No se encontró una fila de encabezados con una columna de interno o dominio.' });
     }
@@ -76,7 +239,7 @@ async function procesarLibro(data, filename) {
 
     // Mapeo guardado por el usuario para este tipo (si corrigió alguna columna alguna vez).
     const mapeoGuardado = await getMapeo(det.tipo).catch(() => null);
-    const mapeo = (mapeoGuardado && mapeoGuardado.columnas) || {};
+    const mapeo = { ...((mapeoGuardado && mapeoGuardado.columnas) || {}), ...(mapeoDecision || {}) };
 
     let n = 0;
     if (det.tipo === 'EQUIPOS') n = await handleEquipos(filas, filename, mapeo);
@@ -159,6 +322,7 @@ function detectarFormato(rawRows, filename) {
         const tieneId = celdas.some(c => c && COLS_IDENTIDAD.some(k => c.includes(k.replace(/[\s-]/g, ''))));
         const suficientes = celdas.filter(Boolean).length >= 2;
         if (tieneId && suficientes) {
+            out.generico = true;
             out.tipo = slugCampo(filename.replace(/\.(xlsx|xls|csv)$/i, '').replace(/[\d_\-.]+$/g, ''));
             out.etiqueta = tituloDesdeArchivo(filename);
             out.headerRowIdx = i;
@@ -462,6 +626,9 @@ async function handleGenerico(filas, filename, det, mapeo) {
         const fecha = parseDate(val(row, 'fecha', ['FECHA', 'DATE', 'DIA'], mapeo)) || '';
         const numericos = {};
         Object.entries(row).forEach(([col, v]) => {
+            // "__fila_excel" es metadato interno (el número de fila en la planilla), no un dato:
+            // antes se sumaba como una métrica más ("Fila excel: 5") en cualquier planilla genérica.
+            if (col.startsWith('__')) return;
             if (v === '' || v === null || v === undefined) return;
             const n = typeof v === 'number' ? v : parseNumber(v);
             // Solo se toma como métrica si el valor original era realmente numérico.

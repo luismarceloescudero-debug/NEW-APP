@@ -11,7 +11,8 @@
     "verificar:actualizar": "node tools/verificar-datos-reales.mjs --actualizar",
     "auditar": "node tools/auditar-calculos.mjs",
     "declarados": "node tools/auditar-declarados.mjs",
-    "probar": "npm run declarados && npm run verificar && npm run auditar",
+    "importacion": "node tools/probar-importacion.mjs",
+    "probar": "npm run declarados && npm run importacion && npm run verificar && npm run auditar",
     "vendor:fontawesome": "node tools/vendorizar-fontawesome.cjs",
     "iconos:generar": "node tools/generar-iconos.cjs icons"
   },

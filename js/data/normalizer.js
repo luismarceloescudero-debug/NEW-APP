@@ -273,6 +273,19 @@ export function normalizeString(val) {
  * "MX63" y "MX630" no colapsan (ninguno tiene cero a la izquierda) y un sufijo como
  * "MX108VL" no se toca.
  */
+/**
+ * Identidad legible de un equipo: "INTERNO DOMINIO" (ej. "TR21 AD291BF"), que es como la
+ * trae la planilla de combustible y la forma en que el usuario reconoce cada unidad. Es un
+ * texto para MOSTRAR: se sacan espacios y guiones ("TR-21" → "TR21") pero se respetan los
+ * ceros ("BM07" sigue siendo "BM07"). Para CRUZAR se usa normalizeEquipoKey(), que además
+ * quita esos ceros. Si falta el dominio queda solo el interno, y viceversa.
+ */
+export function identidadTexto(interno, dominio) {
+    const i = normalizeString(interno || '').replace(/[\s\-_]/g, '');
+    const d = normalizeString(dominio || '').replace(/[\s\-_]/g, '');
+    return [i, d].filter(Boolean).join(' ');
+}
+
 export function normalizeEquipoKey(interno) {
     if (!interno) return '';
     const base = normalizeString(interno).replace(/[\s\-_]/g, '').trim();
@@ -406,6 +419,22 @@ export function extraerIdentidad(...valores) {
         // es el caso de una celda que mezcla dos identificadores juntos, ej. "BM09 JNU923".
         // Fix: antes SIEMPRE se dividía primero, así que una patente con espacio interno se
         // partía en fragmentos ("OXZ" + "911") que por separado no calificaban como nada.
+        // Excepción (Fase 7, identidad "INTERNO DOMINIO"): una celda con espacio cuyos pedazos
+        // son, por separado, un interno Y una patente — "TR-21 AD291BF", "ZZ-01 AA000AA" — se
+        // separa aunque la celda entera también "califique". Sin esto, la regla de guion de
+        // clasificarIdentificador ("MX-108-VL" es un interno) se quedaba con el interno y
+        // TIRABA la patente. "OXZ 911" no entra acá: sus pedazos no son interno ni patente.
+        const pedazos = raw.split(/[\s/|]+/).filter(Boolean);
+        if (pedazos.length === 2) {
+            const [a, b] = pedazos.map(clasificarIdentificador);
+            const par = (a.tipo === 'interno' && b.tipo === 'dominio') ? [a, b] : (b.tipo === 'interno' && a.tipo === 'dominio') ? [b, a] : null;
+            if (par) {
+                if (!interno) interno = par[0].valor;
+                if (!dominio) dominio = par[1].valor;
+                return;
+            }
+        }
+
         const entero = clasificarIdentificador(raw);
         if (entero.tipo === 'dominio' || entero.tipo === 'interno') {
             if (entero.tipo === 'dominio' && !dominio) dominio = entero.valor;

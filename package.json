@@ -12,7 +12,8 @@
     "auditar": "node tools/auditar-calculos.mjs",
     "declarados": "node tools/auditar-declarados.mjs",
     "importacion": "node tools/probar-importacion.mjs",
-    "probar": "npm run declarados && npm run importacion && npm run verificar && npm run auditar",
+    "unidades": "node tools/auditar-unidades.mjs",
+    "probar": "npm run declarados && npm run importacion && npm run unidades && npm run verificar && npm run auditar",
     "vendor:fontawesome": "node tools/vendorizar-fontawesome.cjs",
     "iconos:generar": "node tools/generar-iconos.cjs icons"
   },

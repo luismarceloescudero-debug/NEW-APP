@@ -53,12 +53,15 @@ npm run probar      # los cuatro arneses, del más rápido al más lento
 |---|---|---|
 | `npm run declarados` | ¿Las funciones puras siguen dando lo mismo? | siempre (es instantáneo) |
 | `npm run importacion` | ¿La Fase 7 sigue reconociendo planillas? | si tocaste parsers o esquemas |
+| `npm run unidades` | ¿Los dos lados de cada cruce están en la misma unidad? | si tocaste parsers, o agregaste un campo numérico |
 | `npm run verificar` | ¿Los totales coinciden con `tools/invariantes.json`? | si tocaste `js/data/` o `js/parsers/` |
 | `npm run auditar` | ¿Cada número se re-deriva de su definición? | idem |
 
-**`verificar` y `auditar` no se reemplazan entre sí.** El primero compara contra una línea base
-congelada: detecta un número que **cambió**, nunca una fórmula que estuvo **mal desde el día uno**.
-El segundo recalcula todo desde su propia definición.
+**Ninguno reemplaza a otro.** `verificar` compara contra una línea base congelada: detecta un
+número que **cambió**, nunca una fórmula que estuvo **mal desde el día uno**. `auditar` recalcula
+todo desde su propia definición. `unidades` pregunta lo que ninguno de los dos —si los dos lados
+de un cruce están en la misma unidad— que es la falla más silenciosa: no rompe nada y sigue
+imprimiendo una cifra plausible.
 
 Si `verificar` falla y **el cambio de número es intencional**, recién ahí:
 

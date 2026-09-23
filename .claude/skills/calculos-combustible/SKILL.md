@@ -111,7 +111,32 @@ informa **189 equipos analizados** contra los **84** de acá. Puede ser una dife
 definición (qué cuenta como "analizado") o un filtro que descarta equipos de más. **Medirlo antes
 de tocar nada**, y no citar ninguno de los dos números como correcto hasta entender la diferencia.
 
-## 6. Lo que nunca se hace
+## 6. Antes de cruzar, mirá el formato — no la etiqueta de la columna
+
+El orden correcto es **mirar el formato real → normalizar a una unidad declarada → recién ahí
+cruzar**. Saltearse el primer paso es la falla más silenciosa del proyecto: un número en la
+unidad equivocada no lanza ningún error y sigue imprimiendo una cifra plausible.
+
+`npm run unidades` (`tools/auditar-unidades.mjs`) automatiza exactamente eso. Su tabla `UNIDADES`
+es el contrato: declara la unidad y el rango físico de cada campo que participa de un cruce. Si
+cambiás la unidad de un campo en el parser sin actualizar esa tabla, el arnés falla — que es lo
+que tiene que pasar.
+
+Las tres trampas que cubre, todas vistas en datos reales de este proyecto:
+
+| Trampa | Cómo se detecta |
+|---|---|
+| Horas leídas como fracción de día de Excel | Salen 24× más chicas: el máximo mensual queda ≤ 31 en vez de acercarse a 744 |
+| Un serial de fecha de Excel en un campo que no es fecha | El valor coincide **al bit** con una celda de fecha de su propia fila |
+| Dos fuentes con unidades distintas en el mismo cruce | La razón cae fuera del rango físico (ej. velocidad media > 120 km/h) |
+
+**Caer en el rango de seriales de fecha no alcanza como señal**: hay 28 importes legítimos entre
+43831 y 49673. La señal fuerte es la coincidencia exacta con la fecha de la misma fila.
+
+Al agregar un campo numérico nuevo que vaya a participar de un cruce, sumalo a `UNIDADES` con su
+unidad y su rango. Un campo sin contrato es un campo que nadie está mirando.
+
+## 7. Lo que nunca se hace
 
 - Prorratear actividad a meses sin medición.
 - Dividir litros de un período por actividad de otro.

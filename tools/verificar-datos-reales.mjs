@@ -131,13 +131,19 @@ async function main() {
         .map(([mes, set]) => ({ mes, unidades: set.size, pct: totalEquiposActivos ? Math.round(set.size / totalEquiposActivos * 100) : null }));
 
     const litrosTotales = num(cargas.reduce((s, c) => s + (parseFloat(c.litros) || 0), 0));
+    // El costo entra a la línea base desde el 23/09/2026. Faltaba, y ese hueco tenía consecuencia
+    // medible: la recomposición de un importe mal cargado movió el total en 426.518,56 pesos y
+    // esta verificación no se enteró — los litros no se movían, así que todo daba verde. La
+    // métrica más sensible del panel es justamente la que no estaba vigilada.
+    const costoTotal = num(cargas.reduce((s, c) => s + (parseFloat(c.importe) || 0), 0));
+    const recompuestas = cargas.filter(c => c._importe_recompuesto).length;
     const volumenLoop = num(entregas.reduce((s, r) => s + (parseFloat(r.volumen) || 0), 0));
 
     const medido = {
         generado: new Date().toISOString(),
         archivos: resultadosArchivo,
         equipos_maestro: equipos.length,
-        cargas: { filas: cargas.length, litros_totales: litrosTotales, sin_fecha: cargas.filter(c => !c.fecha).length, sin_litros: cargas.filter(c => !(parseFloat(c.litros) > 0)).length },
+        cargas: { filas: cargas.length, litros_totales: litrosTotales, costo_total: costoTotal, importes_recompuestos: recompuestas, sin_fecha: cargas.filter(c => !c.fecha).length, sin_litros: cargas.filter(c => !(parseFloat(c.litros) > 0)).length },
         gps: { filas_equipo_mes: gps.length, cobertura_por_mes: coberturaGpsPorMes },
         entregas_loop: { registros_finales: entregas.length, volumen_total_m3: volumenLoop, remitos_en_conflicto: new Set(conflictoRemito.map(r => r.remito)).size, filas_en_conflicto: conflictoRemito.length },
         duplicados_exactos_detectados: dupExactas.length,
@@ -203,8 +209,17 @@ async function main() {
     console.log('\n=== COMPARANDO CONTRA tools/invariantes.json ===');
     const esperado = JSON.parse(readFileSync(INVARIANTES_PATH, 'utf8'));
     const fallas = [];
+    const faltantes = [];
 
     const checar = (nombre, actual, esp, tolerancia = 0) => {
+        // Un esperado ausente daba NaN, y `NaN > tolerancia` es false: el chequeo pasaba sin
+        // comparar nada. Un chequeo muerto en silencio es peor que no tenerlo, porque da verde.
+        // Pasa de verdad cuando se agrega una métrica nueva y la línea base todavía no la tiene:
+        // se avisa y se pide refijarla, en vez de fingir que se verificó.
+        if (esp === undefined || esp === null) {
+            faltantes.push(`${nombre}: no está en la línea base (midió ${actual}) — correr "npm run verificar:actualizar" para fijarlo`);
+            return;
+        }
         const diff = Math.abs(actual - esp);
         if (diff > tolerancia) fallas.push(`${nombre}: esperado ${esp}, midió ${actual} (diferencia ${diff > 0 ? '+' : ''}${num(actual - esp)})`);
     };
@@ -212,6 +227,8 @@ async function main() {
     checar('equipos en el maestro', medido.equipos_maestro, esperado.equipos_maestro);
     checar('filas de cargas', medido.cargas.filas, esperado.cargas.filas);
     checar('litros totales de cargas', medido.cargas.litros_totales, esperado.cargas.litros_totales, 1);
+    checar('costo total de cargas', medido.cargas.costo_total, esperado.cargas?.costo_total, 1);
+    checar('importes recompuestos', medido.cargas.importes_recompuestos, esperado.cargas?.importes_recompuestos);
     checar('cargas sin fecha', medido.cargas.sin_fecha, esperado.cargas.sin_fecha);
     checar('cargas sin litros', medido.cargas.sin_litros, esperado.cargas.sin_litros);
     checar('registros finales de entregas Loop', medido.entregas_loop.registros_finales, esperado.entregas_loop.registros_finales);
@@ -231,12 +248,22 @@ async function main() {
         console.log('(la referencia no tiene KPIs del panel: regenerala con --actualizar para controlarlos)');
     }
 
+    if (faltantes.length) {
+        console.error(`\nMÉTRICAS SIN LÍNEA BASE (${faltantes.length}) — no se verificaron:`);
+        faltantes.forEach(f => console.error('  - ' + f));
+    }
+
     if (fallas.length) {
         console.error('\nFALLÓ LA VERIFICACIÓN:');
         fallas.forEach(f => console.error('  - ' + f));
         console.error('\nSi el cambio de número es intencional (subiste una planilla nueva, corregiste');
         console.error('una regla de cálculo a propósito), corré con --actualizar para fijar el nuevo');
         console.error('valor como esperado. Si NO lo es, hay un bug: no sigas.');
+        process.exit(1);
+    }
+    if (faltantes.length) {
+        console.error('\nHay métricas nuevas sin valor esperado. Refijá la línea base con');
+        console.error('"npm run verificar:actualizar" para que empiecen a vigilarse.');
         process.exit(1);
     }
     console.log('OK — todo coincide con tools/invariantes.json');

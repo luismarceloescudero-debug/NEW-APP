@@ -553,6 +553,43 @@ function unirDistinto(a, b) {
 
 // ---------------------------------------------------------------- movimientos
 
+/**
+ * El importe de una carga, recomponiéndolo cuando la celda no trae plata sino una fecha.
+ *
+ * Caso real, verificado sobre `Cargas_Combustible_HSV_2026.xlsx` (fila 4747 de la hoja
+ * Registros): las columnas FECHA, DMA y COSTO TOTAL ($) traen **el mismo** número,
+ * 46281.43541666667 — el serial de fecha-hora de Excel del 16/09/2026 10:26. Alguien arrastró
+ * la fecha sobre la celda de costo al cargar la planilla.
+ *
+ * Por qué no se puede dejar pasar: 46.281 es un importe perfectamente plausible entre cargas
+ * que van de 2.914 a 1.375.494, así que no lo delata nada. Contarlo tal cual mete un gasto
+ * falso en el KPI de costo Y esconde el real: esa carga son 197 L × 2.400 = 472.800, o sea
+ * 426.518 pesos que desaparecen del total de la flota.
+ *
+ * Por qué acá SÍ se recompone, si la regla del proyecto es no auto-corregir plata: la regla
+ * existe porque un precio distinto puede ser un aumento real que solo una persona confirma
+ * contra el comprobante. Este caso no es ese: el precio unitario está bien, los litros están
+ * bien, y el importe **no es un importe** — es, al bit, la misma celda de fecha de su propia
+ * fila. No hay una segunda lectura posible, así que entra en la misma categoría que las
+ * correcciones sin ambigüedad de `autocorreccion.js`.
+ *
+ * Nunca se pierde el dato original: queda en `_importe_original` y el registro se marca con
+ * `_importe_recompuesto` para poder auditarlo desde Base de Datos.
+ */
+function importeDeCarga(row, fechaVal, litros, precio, mapeo) {
+    const crudo = parseNumber(val(row, 'importe', ['COSTO TOTAL', 'IMPORTE', 'MONTO'], mapeo));
+    const fechaNum = typeof fechaVal === 'number' ? fechaVal : NaN;
+    const esLaFechaDeLaFila = isFinite(fechaNum) && isFinite(crudo) && Math.abs(crudo - fechaNum) < 1e-9;
+
+    if (!esLaFechaDeLaFila || !(litros > 0) || !(precio > 0)) return { importe: crudo };
+
+    return {
+        importe: litros * precio,
+        _importe_original: crudo,
+        _importe_recompuesto: 'La celda de costo traía la fecha de la fila, no un importe. Recompuesto como litros × precio unitario.'
+    };
+}
+
 async function handleCargas(filas, filename, mapeo) {
     const recs = [];
     filas.forEach(row => {
@@ -561,6 +598,8 @@ async function handleCargas(filas, filename, mapeo) {
 
         const fechaVal = val(row, 'fecha', ['FECHA', 'DATE'], mapeo);
         const fecha = parseDate(fechaVal);
+        const litros = parseNumber(val(row, 'litros', ['LITROS', 'CANTIDAD'], mapeo));
+        const precio = parseNumber(val(row, 'precio', ['PRECIO UNITARIO'], mapeo));
         const lugar_carga = normalizeString(val(row, 'lugar', ['LUGAR DE CARGA', 'LUGAR', 'SURTIDOR'], mapeo)) || '';
         // CALOVENTOR/MANTENIMIENTO/SURTIDOR en la columna de vehículo: caloventor de sede, no
         // equipo rodante — se resuelve con el lugar de carga de esta misma fila (ver
@@ -578,9 +617,9 @@ async function handleCargas(filas, filename, mapeo) {
             // mismo equipo, mismo día y litros parecidos son dos eventos reales separados en el
             // tiempo, no la misma carga cargada dos veces.
             hora: parseHoraDeFecha(fechaVal),
-            litros: parseNumber(val(row, 'litros', ['LITROS', 'CANTIDAD'], mapeo)),
-            importe: parseNumber(val(row, 'importe', ['COSTO TOTAL', 'IMPORTE', 'MONTO'], mapeo)),
-            precio_unitario: parseNumber(val(row, 'precio', ['PRECIO UNITARIO'], mapeo)),
+            litros,
+            ...importeDeCarga(row, fechaVal, litros, precio, mapeo),
+            precio_unitario: precio,
             combustible: normalizeString(val(row, 'combustible', ['TIPO DE COMBUSTIBLE'], mapeo)) || '',
             chofer: normalizeString(val(row, 'chofer', ['CHOFER'], mapeo)) || '',
             // OJO: no se puede buscar por candidato fuzzy 'TIPO' acá — "TIPO DE COMBUSTIBLE"

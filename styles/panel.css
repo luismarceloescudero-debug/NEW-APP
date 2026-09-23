@@ -1342,9 +1342,30 @@ button.meta-periodo-warn:hover { background: rgba(255, 179, 0, 0.12); border-sty
     font-size: 0.76rem; color: var(--text-secondary);
     cursor: help;
 }
-.card-cross-check i { color: #8b5cf6; font-size: 0.72rem; flex-shrink: 0; }
+.card-cross-check i { color: var(--accent-purple); font-size: 0.72rem; flex-shrink: 0; }
 .card-cross-check strong { color: var(--text-primary); }
 .card-cross-check small { color: var(--text-muted); margin-left: auto; }
+
+/* Una sola unidad a la vista. La otra no se borra: se guarda detrás del botón, porque para un
+   equipo estacionario el L/100km es ruido (una bomba con 2,2 km da 4.591 L/100km) pero para un
+   mixer que mezcla ruta con ralentí en obra las dos hacen falta. */
+.card-cross-check .cc-alterna { display: none; }
+.card-cross-check.ver-alterna .cc-principal { display: none; }
+.card-cross-check.ver-alterna .cc-alterna { display: inline; }
+
+.btn-ver-otra-unidad {
+    background: transparent;
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    border-radius: var(--radius-full);
+    padding: 0.05rem 0.5rem;
+    font-size: 0.68rem;
+    font-family: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+.btn-ver-otra-unidad:hover { color: var(--accent-cyan); border-color: var(--accent-cyan); }
 
 /* ============================================================
    Overlay de tarjeta: pantalla completa al hacer click en una tarjeta

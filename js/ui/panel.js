@@ -170,6 +170,38 @@ const money = (n) => Math.abs(n) >= 1e6 ? `$${nf(n / 1e6, 1)} M` : `$${nf(n)}`;
 const unidadConsumoLabel = (tipoCalculo) => (tipoCalculo === 'L/Hora' || tipoCalculo === 'L/100Km') ? tipoCalculo : '';
 
 /**
+ * El bloque de "las dos unidades", con UNA sola a la vista y un botón para ver la otra.
+ *
+ * Antes se mostraban las dos al mismo tiempo. El problema real: un equipo estacionario publica
+ * un L/100km que no significa nada —BM07, una bomba, hizo 2,2 km en el período y da 4.591,50
+ * L/100km— justo al lado del número bueno. Quien lee rápido se lleva el número equivocado.
+ *
+ * No se oculta la otra unidad: se guarda detrás de un botón. Donde las distancias son largas y
+ * además hay ralentí en obra (Tunuyán es el caso típico) sigue haciendo falta ver las dos, solo
+ * que de a una. La que se muestra primero es SIEMPRE la unidad declarada del equipo
+ * (`tipo_calculo`), que es la que manda para el control de consumo.
+ *
+ * Una sola definición para la tarjeta y para el overlay (invariante 2): antes el mismo bloque
+ * estaba escrito dos veces con textos distintos.
+ */
+function bloqueDosUnidades(m, { compacto = false } = {}) {
+    if (!(m.consumo_l_hora > 0 && m.consumo_l_100km > 0)) return '';
+
+    const principalEsHora = m.tipo_calculo !== 'L/100Km';
+    const val = (esHora) => `${nf(esHora ? m.consumo_l_hora : m.consumo_l_100km, 2)} ${esHora ? 'L/Hora' : 'L/100Km'}`;
+    const base = `${nf(m.horas_alineadas || m.total_horas, 1)} hs · ${nf(m.km_alineados || m.total_km)} km`;
+    const otraEtiqueta = principalEsHora ? 'L/100Km' : 'L/Hora';
+
+    return `<div class="card-cross-check"${compacto ? ' style="margin-top:8px"' : ''} title="Las dos unidades salen de la misma base alineada (${nf(m.litros_alineados || m.total_litros, 1)} L, ${base}). Se muestra la unidad declarada del equipo; el botón cambia a la otra.">
+            <i class="fa-solid fa-arrows-left-right"></i>
+            <span class="cc-principal"><strong class="unidad-principal">${val(principalEsHora)}</strong></span>
+            <span class="cc-alterna"><strong>${val(!principalEsHora)}</strong></span>
+            <button type="button" class="btn-ver-otra-unidad" data-otra="${esc(otraEtiqueta)}" title="Ver el mismo consumo expresado en la otra unidad">en ${esc(otraEtiqueta)}</button>
+            <small>(${base})</small>
+        </div>`;
+}
+
+/**
  * Acciones propuestas por tipo de hallazgo: cada una genera un botón que al hacer click
  * ejecuta algo concreto (abrir la comparativa, navegar a una tarjeta, ajustar metas, etc.).
  * No son genéricas: cada hallazgo conoce su propio siguiente paso.
@@ -5157,11 +5189,7 @@ function cardHTML(f, maxLitros, precioPromedio = 0, periodo = 'período seleccio
                 ${m.consumo_real > 0 && m.alineacion && m.alineacion.meses.length < m.alineacion.meses_cargas.length ? `<span class="stat-nota" title="El consumo se calcula sobre ${m.alineacion.meses.length} mes${m.alineacion.meses.length !== 1 ? 'es' : ''} con datos de Cargas Y GPS a la vez. El equipo cargó en ${m.alineacion.meses_cargas.length} mes${m.alineacion.meses_cargas.length !== 1 ? 'es' : ''} en total.">${m.alineacion.meses.length} de ${m.alineacion.meses_cargas.length} meses</span>` : ''}
             </div>
         </div>
-        ${m.consumo_l_hora > 0 && m.consumo_l_100km > 0 ? `<div class="card-cross-check" title="Las dos unidades, calculadas sobre la misma base (${nf(m.litros_alineados || m.total_litros, 1)} L, ${nf(m.horas_alineadas || m.total_horas, 1)} hs, ${nf(m.km_alineados || m.total_km)} km). No son alternativas: donde las distancias son largas pero además hay ralentí en obra —Tunuyán es el caso típico— hace falta mirar las dos para entender el consumo.">
-            <i class="fa-solid fa-arrows-left-right"></i>
-            <span>Medido de las dos formas: <strong${m.tipo_calculo === 'L/Hora' ? ' class="unidad-principal"' : ''}>${nf(m.consumo_l_hora, 2)} L/Hora</strong> · <strong${m.tipo_calculo === 'L/100Km' ? ' class="unidad-principal"' : ''}>${nf(m.consumo_l_100km, 2)} L/100Km</strong></span>
-            <small>(${nf(m.horas_alineadas || m.total_horas, 1)} hs y ${nf(m.km_alineados || m.total_km)} km)</small>
-        </div>` : ''}
+        ${bloqueDosUnidades(m)}
         ${confirmed ? `<div class="card-meta-hero">
             <span class="meta-label"><i class="fa-solid fa-bullseye"></i> Meta ${confirmed.source === 'Maestro' ? '(ajustada)' : '(estimada)'}</span>
             <span class="meta-valor">${nf(confirmed.valor, 2)} <small>${esc(unidadConsumoLabel(confirmed.unidad || m.tipo_calculo))}</small></span>
@@ -5311,7 +5339,7 @@ function abrirOverlayEquipo(fila, analisis) {
                 <span>Meta <strong>${nf(confirmed.valor, 2)}</strong></span>
               </div>
             </div>` : ''}` : (m.consumo_real > 0 ? `<div class="card-meta-hero card-meta-falta overlay-meta-hero"><span class="meta-label"><i class="fa-solid fa-circle-question"></i> Sin meta cargada</span></div>` : '')}
-            ${m.consumo_l_hora > 0 && m.consumo_l_100km > 0 ? `<div class="card-cross-check" style="margin-top:8px" title="Las dos unidades sobre la misma base alineada. Donde las distancias son largas y además hay ralentí en obra (Tunuyán), hace falta mirar las dos."><i class="fa-solid fa-arrows-left-right"></i> Medido de las dos formas: <strong${m.tipo_calculo === 'L/Hora' ? ' class="unidad-principal"' : ''}>${nf(m.consumo_l_hora, 2)} L/Hora</strong> · <strong${m.tipo_calculo === 'L/100Km' ? ' class="unidad-principal"' : ''}>${nf(m.consumo_l_100km, 2)} L/100Km</strong> <small>(${nf(m.horas_alineadas || m.total_horas, 1)} hs · ${nf(m.km_alineados || m.total_km)} km)</small></div>` : ''}
+            ${bloqueDosUnidades(m, { compacto: true })}
             ${combustibleLine}
             ${ubi.centroCosto ? `<div class="overlay-line"><i class="fa-solid fa-building"></i> ${esc(ubi.centroCosto)}</div>` : ''}
             ${ubi.provincia && ubi.provincia !== 'SIN DATO' ? `<div class="overlay-line"><i class="fa-solid fa-location-dot"></i> ${esc(ubi.provincia)}</div>` : ''}
@@ -5479,6 +5507,21 @@ async function guardarEdicion(interno, cardEl) {
 
 export function initPanelControls() {
     const rerender = () => { const c = document.getElementById('cards-container'); if (ultimoAnalisis && c) renderCards(c, ultimoAnalisis); };
+
+    // Cambiar de unidad en el bloque de cross-check. Va delegado en document y no por tarjeta
+    // porque las tarjetas se vuelven a dibujar enteras en cada filtro: un listener por botón se
+    // perdería en el primer re-render. Es puramente visual — no toca ningún dato ni recalcula.
+    document.addEventListener('click', (e) => {
+        const btn = e.target.closest?.('.btn-ver-otra-unidad');
+        if (!btn) return;
+        e.stopPropagation();          // la tarjeta entera abre el overlay al click
+        const bloque = btn.closest('.card-cross-check');
+        if (!bloque) return;
+        const viendoAlterna = bloque.classList.toggle('ver-alterna');
+        const otra = btn.dataset.otra || '';
+        const principal = otra === 'L/Hora' ? 'L/100Km' : 'L/Hora';
+        btn.textContent = viendoAlterna ? `en ${principal}` : `en ${otra}`;
+    });
 
     let deb;
     document.getElementById('search-equip')?.addEventListener('input', (e) => {

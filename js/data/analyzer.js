@@ -13,7 +13,7 @@
  */
 
 import { normalizeEquipoKey, identidadTexto, getPrefijo, getDenominacion, partesFecha, getProvincia, getNombreCentroCosto, tipoLugarCarga, getBandera } from './normalizer.js';
-import { diasHabiles } from './feriados.js';
+import { diasHabiles, ultimoDiaHabilDelMes } from './feriados.js';
 
 export const RULE_L_100KM = ['TR', 'CM', 'CH', 'FG', 'AU'];
 // CA (CALDERA) y LM (LIMPIEZA) se suman acá a propósito: consumen por tiempo de uso, no por
@@ -313,14 +313,64 @@ export function rangoCalendarioDePeriodos(periodos = []) {
  * Un reporte de GPS que abarca meses sin cargas queda afuera en vez de repartirse a
  * prorrata: repartirlo sería inventar km que nadie midió.
  */
-export function alinearCargasYGps(cargasList = [], gpsList = []) {
+/**
+ * Qué meses cubre una fuente ENTEROS y cuáles corta a la mitad.
+ *
+ * Un mes cubierto a medias no puede entrar a un ratio: con las cargas cortadas el día 21 y el
+ * GPS cubriendo el mes entero, el consumo sale con el numerador de dos tercios de mes y el
+ * denominador de uno completo. Da un número plausible y está mal por un tercio.
+ *
+ * **La completitud es de la FUENTE, no del equipo.** Un equipo puede no haber cargado la última
+ * semana por motivos suyos y eso no vuelve al mes incompleto; lo que lo vuelve incompleto es que
+ * la planilla entera se corte ahí. Por eso esto se calcula una vez sobre todos los registros de
+ * la fuente y se aplica igual a todos los equipos.
+ *
+ * `campoFin` distingue los dos tipos de registro: las cargas son puntuales (`fecha`) y los
+ * reportes de GPS declaran su propio rango (`fecha_hasta`), así que un GPS mensual cubre el mes
+ * entero por declaración aunque su última fila sea del día 20.
+ *
+ * El corte es el último día **hábil**, no el último del mes: mayo 2026 termina domingo 31 y su
+ * última carga es del sábado 30, así que la regla ingenua lo marcaría incompleto sin serlo.
+ *
+ * Medido sobre los archivos reales al 23/09/2026: enero a agosto dan completos y **septiembre
+ * da incompleto** (416 cargas, la última del día 21 de 30).
+ */
+export function mesesCompletosDeFuente(registros = [], campoFin = 'fecha') {
+    const finPorMes = new Map();
+    for (const r of registros) {
+        if (!r) continue;
+        const fin = String(r[campoFin] || r.fecha || '');
+        if (!/^\d{4}-\d{2}-\d{2}/.test(fin)) continue;
+        // Un reporte multi-mes cierra TODOS los meses que cubre salvo el último, que es el
+        // que puede quedar a medias.
+        for (const ym of mesesDeRegistro(r)) {
+            const prev = finPorMes.get(ym);
+            if (!prev || fin > prev) finPorMes.set(ym, fin);
+        }
+    }
+    const completos = new Set(), incompletos = new Map();
+    for (const [ym, fin] of finPorMes) {
+        const corte = ultimoDiaHabilDelMes(ym);
+        if (corte && fin.slice(0, 10) >= corte) completos.add(ym);
+        else incompletos.set(ym, { hasta: fin.slice(0, 10), esperado: corte });
+    }
+    return { completos, incompletos };
+}
+
+export function alinearCargasYGps(cargasList = [], gpsList = [], mesesIncompletos = new Set()) {
     const mesesCargas = new Set();
     cargasList.forEach(c => { const m = mesDe(c); if (m) mesesCargas.add(m); });
 
     const mesesGps = new Set();
     gpsList.forEach(g => mesesDeRegistro(g).forEach(m => mesesGps.add(m)));
 
-    const comunes = new Set([...mesesCargas].filter(m => mesesGps.has(m)));
+    let comunes = new Set([...mesesCargas].filter(m => mesesGps.has(m)));
+
+    // Un mes que alguna de las dos fuentes cubre a medias sale del común (ver
+    // mesesCompletosDeFuente). `mesesIncompletos` lo calcula analizarFlota() una sola vez sobre
+    // la fuente entera, no por equipo.
+    const recortados = [...comunes].filter(m => mesesIncompletos.has(m)).sort();
+    if (recortados.length) comunes = new Set([...comunes].filter(m => !mesesIncompletos.has(m)));
 
     const cargas = cargasList.filter(c => { const m = mesDe(c); return m && comunes.has(m); });
     // Solo el GPS que cae ENTERO dentro de los meses comunes: uno que además cubre meses sin
@@ -345,7 +395,11 @@ export function alinearCargasYGps(cargasList = [], gpsList = []) {
         sinMesComun: comunes.size === 0 && mesesCargas.size > 0 && mesesGps.size > 0,
         cargasFuera: cargasList.length - cargas.length,
         gpsFuera: gpsList.length - gps.length,
-        gpsParcial
+        gpsParcial,
+        // Los meses que SÍ eran comunes pero salieron por estar cubiertos a medias. Se publican
+        // para poder declararlo en la tarjeta: un mes que desaparece del cálculo sin explicación
+        // es peor que el problema que se está evitando.
+        mesesIncompletosRecortados: recortados
     };
 }
 
@@ -512,7 +566,7 @@ export function jornadaPonderada(equipo, ubicacion, meses = []) {
 /**
  * Métricas de un equipo, con los pasos del cálculo incluidos.
  */
-export function calculateMetrics(equipo, cargasList = [], gpsList = [], confirmed = null, otrosList = []) {
+export function calculateMetrics(equipo, cargasList = [], gpsList = [], confirmed = null, otrosList = [], mesesIncompletos = new Set()) {
     const calcType = determineConsumptionType(equipo, cargasList, confirmed);
 
     let totalLitros = 0, totalCosto = 0;
@@ -532,7 +586,7 @@ export function calculateMetrics(equipo, cargasList = [], gpsList = [], confirme
     const volumenEntregadoLoop = entregasLoop.reduce((s, r) => s + (parseFloat(r.volumen) || 0), 0);
 
     // Base ALINEADA del ratio: mismos meses de los dos lados (ver alinearCargasYGps).
-    const alin = alinearCargasYGps(cargasList, gpsList);
+    const alin = alinearCargasYGps(cargasList, gpsList, mesesIncompletos);
     let litrosAlin = 0;
     alin.cargas.forEach(c => { litrosAlin += parseFloat(c.litros) || 0; });
     let kmAlin = 0;
@@ -674,7 +728,11 @@ export function calculateMetrics(equipo, cargasList = [], gpsList = [], confirme
             sin_mes_comun: alin.sinMesComun,
             cargas_fuera: alin.cargasFuera,
             gps_fuera: alin.gpsFuera,
-            gps_parcial: alin.gpsParcial
+            gps_parcial: alin.gpsParcial,
+            // Meses que salieron del ratio por estar cubiertos a medias. La tarjeta tiene que
+            // poder decirlo: un mes que desaparece del cálculo sin explicación es peor que el
+            // problema que se está evitando.
+            meses_incompletos_recortados: alin.mesesIncompletosRecortados || []
         },
         consumo_real: consumoReal,
         desvio_pct: desvioPct,
@@ -961,10 +1019,17 @@ export function analizarFlota({ equipos = [], rawRecords = [], estimados = [], f
     gps.forEach(r => asignar(r, 'gps'));
     otros.forEach(r => asignar(r, 'otros'));
 
+    // Completitud de cada fuente: se calcula UNA vez sobre todas las filas, no por equipo. Un
+    // equipo que no cargó la última semana no vuelve al mes incompleto; lo vuelve incompleto que
+    // la planilla entera se corte ahí (ver mesesCompletosDeFuente).
+    const compCargas = mesesCompletosDeFuente(allCargas, 'fecha');
+    const compGps = mesesCompletosDeFuente(allGps, 'fecha_hasta');
+    const mesesIncompletos = new Set([...compCargas.incompletos.keys(), ...compGps.incompletos.keys()]);
+
     const filas = equipos.filter(eq => !restringido || universo.has(eq.interno)).map(eq => {
         const g = porEquipo.get(eq.interno) || { cargas: [], gps: [], otros: [] };
         const confirmed = getConfirmedConsumption(eq, estimados);
-        const metrics = calculateMetrics(eq, g.cargas, g.gps, confirmed, g.otros);
+        const metrics = calculateMetrics(eq, g.cargas, g.gps, confirmed, g.otros, mesesIncompletos);
         return {
             equipo: { ...eq, denominacion: eq.denominacion || getDenominacion(eq.interno, eq.tipo) },
             identidad: identidadTexto(eq.interno, eq.dominio),
@@ -1029,6 +1094,16 @@ export function analizarFlota({ equipos = [], rawRecords = [], estimados = [], f
     const totales = {
         periodo_desde: start, periodo_hasta: end, periodos_analisis: periodosAnalisis,
         criterio_periodo: criterioPeriodo,
+        // Meses que alguna fuente cubre a medias y que por eso salen de los ratios. Se publican
+        // con hasta dónde llega cada fuente y hasta dónde debería llegar, porque un mes que
+        // desaparece del cálculo sin explicación es peor que el problema que se está evitando.
+        // Es INFORMACIÓN, no una advertencia: que la planilla del mes en curso esté cortada es
+        // lo normal, no un error del usuario (decisión cerrada).
+        meses_incompletos: [...mesesIncompletos].sort().map(ym => ({
+            mes: ym,
+            cargas: compCargas.incompletos.get(ym) || null,
+            gps: compGps.incompletos.get(ym) || null
+        })),
         equipos: equipos.length,
         // Universo del análisis (Fase 7): qué planilla manda, si se restringió, y qué equipos del
         // maestro quedaron afuera por no figurar en ella (con su GPS, para que no se pierdan).

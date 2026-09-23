@@ -17,17 +17,22 @@ cliente y los datos viven en IndexedDB. **Ningún dato de la flota sale de la co
 
 | | **Este repo** (`NEW-APP`) | El hermano (`flotacontrol`) |
 |---|---|---|
-| Carpeta | `NEW APP/flotacontrol-repo-limpio` | `NEW APP/CONSUMO DE COMBUSTIBLE/flotacontrol-repo/repo` |
+| Carpeta | `NO TOCAR/NEW APP/flotacontrol-repo-limpio` | `NO TOCAR/CONSUMO DE COMBUSTIBLE/flotacontrol-repo/repo` |
 | Origen | Reescritura por fases (Fase 0 → 7) | Línea principal, 76 commits |
 | Deploy | **GitHub Pages** (`.github/workflows/pages.yml`) | **Vercel** |
 | IA | **Ollama local**, sin backend ni API key | Backend propio `api/chat.js` con la clave de Anthropic |
-| Estado | Última Fase el 18/09/2026 | Activo |
 
-Cuidado: existe además un **tercer directorio**, `NO TOCAR/CONSUMO DE COMBUSTIBLE/flotacontrol-repo/repo`,
-que es **otro clon del mismo repo hermano**. Antes de concluir que algo "no existe en el código",
-buscarlo en los tres lugares. Una sesión anterior no lo hizo y dejó escrita como verdad, en la
-documentación del hermano, la afirmación de que el modal de mapeo de columnas "nunca se integró":
-existe, es `js/ui/mapeo.js`, y está en **este** repo.
+Los Excel reales viven en `NO TOCAR/NEW APP/ARCHIVOS/` (fuera de todo repo, nunca versionados).
+
+**Hasta el 23/09/2026 hubo un tercer directorio**, `NEW APP/CONSUMO DE COMBUSTIBLE/flotacontrol-repo/repo`,
+que era un **segundo clon del repo hermano**. Ya no está, y eso es una buena noticia: esa
+duplicación causó dos fallas reales, ninguna evidente. Una sesión grepeó en el clon equivocado y
+dejó escrito como verdad, en la documentación del hermano, que el modal de mapeo de columnas
+"nunca se integró" — existe, es `js/ui/mapeo.js`, y está en **este** repo. Y un `preview_start`
+levantó el proyecto equivocado, con la app cargando bien y sin reflejar ningún cambio.
+
+La lección queda aunque el tercer directorio ya no exista: **antes de concluir que algo "no
+existe en el código", confirmá en qué repo estás** (`git remote -v`) y buscá en los dos.
 
 ## Lo que este repo tiene y el hermano no
 
@@ -55,20 +60,7 @@ Son las razones por las que esta bifurcación vale la pena:
 
 Medido el 23/09/2026 comparando ambos árboles. Está en orden de gravedad:
 
-1. **Reglas de negocio posteriores al 18/09** (la bifurcación quedó atrás):
-   - `mesesCompletosDeFuente()` + `ultimoDiaHabilDelMes()` (21/09): una fuente que cubre el mes a
-     medias **no entra al ratio**. Sin esto, con las cargas cortadas el día 14 y el GPS cubriendo
-     el mes entero, el consumo sale con numerador de medio mes y denominador de uno completo:
-     plausible y mal por casi la mitad. **Portarlo requiere cambiar firmas** —en el hermano
-     `alinearCargasYGps(cargas, gps, mesesIncompletos)` y `calculateMetrics(..., mesesIncompletos)`,
-     mientras que acá el quinto parámetro de `calculateMetrics` es `otrosList`— así que no es
-     copiar y pegar: hay que correr los cuatro arneses antes y después.
-   - `tieneIdentificador()` (22/09): decidir "sin identificar" con `clasificarIdentificador()` y
-     no con "el campo no está vacío". Acá sigue la versión vieja, `tienePatente()` en
-     `js/ui/datatable.js:886`, que acepta cualquier texto no vacío: una carga con interno
-     `"MANTENIMIENTO"` o `"CALOVENTOR"` se pinta gris como si fuera un dato válido del vehículo.
-     Medido en el hermano: ocultaba 3 casos reales de 5.
-2. **Vista Rendimiento (L/m³ por mixer)**. Acá `calculateMetrics()` ya acumula
+1. **Vista Rendimiento (L/m³ por mixer)**. Acá `calculateMetrics()` ya acumula
    `volumen_m3`, `dias_entrega` y `remitos` de Loop (línea 530), pero **sin alinear períodos**, y
    no existe `alinearCargasYEntregas()`. Está bien que hoy no se publique ninguna razón con ese
    volumen: sería violar la invariante 1. Para portar la vista hace falta, en este orden:
@@ -77,12 +69,18 @@ Medido el 23/09/2026 comparando ambos árboles. Está en orden de gravedad:
    este repo no tiene. Ojo con la trampa ya documentada en el hermano: el bundle `+esm` de
    jsDelivr importa `@kurkle/color` **de la red en runtime**, lo que rompería la app sin internet;
    hay que vendorizar también esa dependencia y reescribir el import a la ruta local.
-3. **Correcciones de códigos del 23/09** (`corregirCodigoConocido`, `corregirCaloventorPorLugar`)
-   y `tieneIdentificador()`. Ver abajo — estas **ya se portaron** a este repo el 23/09/2026, y el
-   delta medido fue **idéntico** al que produjeron en el hermano sobre los mismos archivos:
-   códigos aceptados automáticamente 1 → 0, huérfanos a revisión manual 16 → 14, hallazgos
-   23 → 21. Los totales de litros, km y horas **no se movieron**, que es exactamente lo que tenía
-   que pasar: reasignar un código cambia a qué equipo van los litros, no cuántos entran.
+
+### Ya portado el 23/09/2026 — no volver a plantearlo como deuda
+
+- **`corregirCodigoConocido()` y `corregirCaloventorPorLugar()`** más **`tieneIdentificador()`**.
+  El delta medido fue **idéntico** al que produjeron en el hermano sobre los mismos archivos:
+  códigos aceptados automáticamente 1 → 0, huérfanos a revisión manual 16 → 14, hallazgos 23 → 21.
+  Los totales de litros, km y horas **no se movieron**: reasignar un código cambia a qué equipo
+  van los litros, no cuántos entran.
+- **`mesesCompletosDeFuente()` + `ultimoDiaHabilDelMes()`**. Ver "Un mes cubierto a medias" abajo.
+  Con los datos actuales **no movió ningún número** —septiembre todavía no tiene GPS, así que no
+  entraba a ninguna intersección— y esa es exactamente la señal de que es una protección latente,
+  no un cambio de criterio.
 
 Lo que **no** es deuda, aunque lo parezca: que no haya `tools/invariantes.json` versionado. Es
 deliberado — ver arriba.
@@ -330,6 +328,45 @@ confirmadas contra el comprobante por HSV y se aplican directo:
   rodante, son cargas del caloventor de una sede. HSV tiene uno por sede, así que el **lugar de
   carga de esa misma fila** resuelve cuál sin ambigüedad: Godoy Cruz → CL02, Tunuyán → CL03,
   San Martín → CL04.
+
+### Un mes cubierto a medias no entra al ratio
+
+Portado el 23/09/2026 (`mesesCompletosDeFuente()` en analyzer.js, `ultimoDiaHabilDelMes()` en
+feriados.js). Medido sobre los archivos reales ese mismo día:
+
+```
+Cargas  2026-01 .. 2026-08  completos
+Cargas  2026-09             INCOMPLETO — 416 cargas, la ultima del dia 21 de 30
+```
+
+**Hoy septiembre zafa de casualidad, no por diseño**: no hay Resumen de Flota de septiembre, así
+que la intersección con GPS lo deja afuera igual. El día que llegue ese GPS —que cubre el mes
+entero por declaración— el consumo saldría con el numerador de dos tercios de mes y el
+denominador completo: **~30% más bajo, plausible y mal**, en toda la flota a la vez.
+
+Verificado simulando ese GPS de septiembre: **0 equipos meten septiembre en su ratio** y 20
+quedan con el recorte declarado en `alineacion.meses_incompletos_recortados`.
+
+Tres detalles que no son obvios:
+
+- **La completitud es de la FUENTE, no del equipo.** Un equipo puede no haber cargado la última
+  semana por motivos suyos y eso no vuelve al mes incompleto; lo vuelve incompleto que la
+  planilla entera se corte ahí. Por eso se calcula una vez en `analizarFlota()` sobre todos los
+  registros y se aplica igual a todos.
+- **El corte es el último día HÁBIL, no el último del mes.** Mayo 2026 termina domingo 31 y su
+  última carga es del sábado 30: la regla ingenua lo marcaría incompleto sin serlo.
+- **Un GPS mensual cubre el mes entero por su rango declarado** aunque su última fila sea del día
+  20, así que se mira `fecha_hasta` en los registros con rango y `fecha` en las cargas.
+
+Se publica en `totales.meses_incompletos` con hasta dónde llega cada fuente y hasta dónde debería
+llegar. Es **información, no advertencia**: que la planilla del mes en curso esté cortada es lo
+normal (decisión cerrada: nunca se le informa al usuario "falta el mes X").
+
+**Lo que todavía NO está cubierto: la retro-carga.** Si mañana se agregan a la planilla cargas de
+un mes ya cerrado —una carga de agosto ingresada en octubre— entrarían a agosto y nada avisaría
+de que un mes ya analizado cambió de valor. Medido el 23/09 sobre las 4.843 filas reales: **hoy
+no pasa** (0 filas fuera de orden cronológico, 0 meses que reaparecen). Para cubrirlo haría falta
+guardar un total por mes entre importaciones y comparar.
 
 ### Una fecha de Excel disfrazada de importe
 

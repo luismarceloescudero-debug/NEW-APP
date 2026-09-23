@@ -38,6 +38,25 @@ contexto. **No publicar ninguna razón con ese volumen** (L/m³, m³/día, $/m³
 coinciden. Medido en el hermano sobre MX97: alineado da 2,543 L/m³, sin alinear 2,962 — 16 % de
 diferencia.
 
+**Y el mes tiene que estar COMPLETO en las dos fuentes.** Que los meses coincidan no alcanza si
+una de las dos cubre el mes a medias: `mesesCompletosDeFuente()` los saca del común antes de
+dividir. Dos cosas que no son obvias:
+
+- **La completitud es de la FUENTE, no del equipo.** Que un equipo no haya cargado la última
+  semana es asunto suyo; lo que vuelve incompleto al mes es que la planilla entera se corte ahí.
+  Se calcula una vez sobre todos los registros, no por equipo.
+- **El corte es el último día HÁBIL.** Mayo 2026 termina domingo y su última carga es del sábado
+  30: preguntar "¿hay dato el 31?" lo marcaría incompleto sin serlo.
+
+Los meses recortados se publican (`totales.meses_incompletos` y
+`alineacion.meses_incompletos_recortados`): un mes que desaparece del cálculo sin explicación es
+peor que el problema que se está evitando.
+
+**Lo que todavía NO está cubierto: la retro-carga.** Una carga de agosto ingresada en octubre
+entra a agosto y nada avisa de que un mes ya analizado cambió de valor. Medido el 23/09/2026:
+hoy no pasa (0 filas fuera de orden cronológico en 4.843). Para cubrirlo habría que guardar un
+total por mes entre importaciones y comparar.
+
 ### Invariante 1b — Todo KPI de flota = Σ tarjetas + lo no asignado
 
 Un registro que no matchea ningún equipo igual alimenta los totales: hay que acumularlo **entero**

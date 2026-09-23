@@ -76,8 +76,15 @@ el promedio.
   **En este repo todavía NO se puede publicar** (ver invariante 1 en la skill de reglas de
   negocio): `calculateMetrics()` acumula `volumen_m3` sin alinear períodos.
 
-Cuando existen los dos denominadores se exponen las dos: `consumo_l_hora` y `consumo_l_100km`.
+Cuando existen los dos denominadores se calculan las dos: `consumo_l_hora` y `consumo_l_100km`.
 `consumo_real` es la de la unidad declarada del equipo.
+
+**Calcular las dos no es lo mismo que mostrar las dos al mismo tiempo.** Desde el 23/09/2026 la
+tarjeta muestra **una sola** —la declarada— con un botón para ver la otra (`bloqueDosUnidades()`
+en panel.js). El motivo es concreto: `BM07` es una bomba, trabaja parada, hizo 2,2 km en el
+período y publicaba **4.591,50 L/100km** justo al lado de su número bueno. Quien lee rápido se
+lleva el equivocado. La otra unidad no se oculta —en un mixer que mezcla ruta con ralentí en
+obra hacen falta las dos— pero se ve de a una.
 
 Una razón sobre **menos de un mes común** o con cobertura baja se marca como no representativa.
 Un número flojo con una etiqueta honesta es útil; sin la etiqueta, miente.

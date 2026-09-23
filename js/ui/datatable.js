@@ -36,7 +36,7 @@ import {
 import { periodosDisponibles, filtrarPorPeriodo, indexarMaestro, resolverEquipo } from '../data/analyzer.js';
 import { esDiaHabil } from '../data/feriados.js';
 import { confiabilidad, sugerirMeta, MIN_CARGAS_CONFIABLE, COBERTURA_MINIMA_PCT, consumoDesdeActividadDeclarada } from '../data/diagnostico.js';
-import { MESES, getDenominacion, normalizeEquipoKey, slugCampo, formatFechaAR } from '../data/normalizer.js';
+import { MESES, getDenominacion, normalizeEquipoKey, slugCampo, formatFechaAR, clasificarIdentificador } from '../data/normalizer.js';
 
 const PAGINA = 300;
 
@@ -882,12 +882,7 @@ async function renderMovimientos(tipo) {
      * (sigue siendo asignable desde la fila, para quien quiera darle interno), y la advertencia
      * queda solo para lo que de verdad no se puede identificar.
      */
-    const ES_PATENTE = /^([A-Z]{3}\d{3}|[A-Z]{2}\d{3}[A-Z]{2})$/;
-    const tienePatente = (r) => {
-        const limpio = (x) => String(x || '').toUpperCase().replace(/[\s-]/g, '');
-        return ES_PATENTE.test(limpio(r.dominio)) || ES_PATENTE.test(limpio(r.interno));
-    };
-    const esSinIdentificar = (r) => esHuerfanaDe(r) && !tienePatente(r);
+    const esSinIdentificar = (r) => esHuerfanaDe(r) && !tieneIdentificador(r);
 
     if (esCarga) poblarFiltrosCarga(todos);
 
@@ -973,7 +968,7 @@ async function renderMovimientos(tipo) {
             esHuerfana = esHuerfanaDe(r);
             yaCorregida = correccionesMap.has(huellaCarga(r));
             if (esHuerfana && !yaCorregida) {
-                if (tienePatente(r)) nConPatente++;
+                if (tieneIdentificador(r)) nConPatente++;
                 else nHuerfanas++;
             }
         }
@@ -1023,7 +1018,7 @@ async function renderMovimientos(tipo) {
     let btnHuerfanasHtml = '';
     if (esCarga) {
         const pendientes = todos.filter(r => esHuerfanaDe(r) && !correccionesMap.has(huellaCarga(r)));
-        const nSinIdentificar = pendientes.filter(r => !tienePatente(r)).length;
+        const nSinIdentificar = pendientes.filter(r => !tieneIdentificador(r)).length;
         const nPatenteSinInterno = pendientes.length - nSinIdentificar;
         if (pendientes.length > 0) {
             const activo = estado.soloHuerfanas ? ' btn-warn-active' : '';
@@ -1218,6 +1213,28 @@ function actualizarSelCountMov() {
 /** Resumen básico para tipos de movimiento genéricos (cubiertas, filtros, insumos…) que
  * todavía no tienen un análisis dedicado: cantidad, costo si hay algo que parezca importe
  * entre las columnas numéricas detectadas, y los equipos con más registros. */
+/**
+ * ¿La carga trae algún dato que la identifique: interno, dominio, o los dos?
+ *
+ * Vive a nivel de módulo porque la usan DOS lugares en funciones distintas: el contador de
+ * arriba de la tabla y el badge de cada fila. Duplicarla sería una segunda definición del
+ * mismo concepto (invariante 2).
+ *
+ * No exige que resuelva contra el maestro, pero sí que tenga FORMA de interno o de dominio
+ * (la misma clasificación que usa el resto de la app — `clasificarIdentificador`). Antes acá
+ * había un regex que solo aceptaba patentes: con eso, un interno de forma válida que todavía
+ * no está en el maestro (ej. "GR01") se marcaba con triángulo de peligro como si fuera un dato
+ * ausente. Al revés, un texto suelto como "MANTENIMIENTO" o "CALOVENTOR" en la columna interno
+ * no es un dato del vehículo, es la ausencia de uno: eso sí sigue siendo huérfano de verdad.
+ */
+export function tieneIdentificador(r) {
+    const esDatoReal = (v) => {
+        const tipo = clasificarIdentificador(v).tipo;
+        return tipo === 'interno' || tipo === 'dominio';
+    };
+    return esDatoReal(r && r.dominio) || esDatoReal(r && r.interno);
+}
+
 function resumenGenerico(filas) {
     if (!filas.length) return '';
     const camposCosto = new Set();

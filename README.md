@@ -80,6 +80,16 @@ También funciona cualquier servidor estático, por ejemplo `python -m http.serv
 Para el asistente IA hace falta Ollama corriendo en la misma computadora (ver "Asistente de
 IA" más abajo). El núcleo de FlotaControl sigue funcionando aunque Ollama no esté instalado.
 
+## Pruebas
+
+La suite de unit tests no necesita ninguna planilla: son las funciones puras de `js/data/` y
+`js/parsers/` contra el contrato que tienen escrito. Corre en unos pocos segundos.
+
+```bash
+npm install
+npm test
+```
+
 ## Verificación de datos
 
 Las planillas reales deben estar fuera del repo. Los arneses aceptan la ruta mediante
@@ -110,6 +120,9 @@ npm run auditar
 
 Los tres comandos deben terminar con código `0`. No ejecutar `verificar:actualizar` para tapar
 una diferencia no explicada.
+
+`npm run probar` encadena los seis (`npm test` primero, después los cinco arneses) y es lo que
+conviene correr antes de commitear cualquier cambio en `js/data/` o `js/parsers/`.
 
 La guía de publicación está en `docs/DEPLOYMENT.md` y la de pruebas en `docs/PRIMERA-FASE.md`.
 

@@ -66,6 +66,15 @@ jobs:
       - name: Instalar dependencias
         run: npm ci
 
+      # Los unit tests no tocan ningún Excel ni IndexedDB: son funciones puras, corren en
+      # segundos y son lo primero que se rompe cuando una fórmula cambia de criterio. Va antes
+      # que los arneses a propósito: lo barato tiene que fallar primero.
+      #
+      # Node 20 acá: el glob de `npm test` lo expande bash antes de llegar a node, así que
+      # funciona igual que en una máquina con Node ≥22 (que lo expandiría solo).
+      - name: npm test (unit tests de funciones puras)
+        run: npm test
+
       - name: npm run declarados
         run: npm run declarados
 

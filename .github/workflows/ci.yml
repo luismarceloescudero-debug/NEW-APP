@@ -22,7 +22,14 @@ jobs:
           # Nombres/extensiones que .gitignore bloquea localmente. Esto es la red de
           # seguridad para lo que igual haya entrado con un `git add -f`.
           patrones='\.xlsx$|\.xls$|\.csv$|\.sqlite3?$|(^|/)\.env$|(^|/)\.env\.[^.]+$|(^|/)invariantes(\.local)?\.json$'
-          coincidencias=$(git ls-files | grep -Ei "$patrones" || true)
+          # .env.example es lo contrario de una fuga: es la plantilla SIN valores que se
+          # commitea a proposito. El patron de arriba la agarraba igual (\.env\.[^.]+$), y por
+          # eso este job venia fallando en todos los runs desde el primer commit — con el
+          # efecto de que un CI siempre rojo deja de informar cuando aparece una fuga real.
+          # Se excluyen solo los sufijos de plantilla; .env, .env.local y .env.production
+          # siguen siendo un error.
+          permitidos='(^|/)\.env\.(example|sample|template)$'
+          coincidencias=$(git ls-files | grep -Ei "$patrones" | grep -Eiv "$permitidos" || true)
           if [ -n "$coincidencias" ]; then
             echo "::error::Se encontraron archivos que no deben estar en el repositorio:"
             echo "$coincidencias"

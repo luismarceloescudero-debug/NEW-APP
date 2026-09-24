@@ -2406,6 +2406,7 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
                         (sinReferencia.length ? ` <strong>${sinReferencia.length}</strong> resumen${sinReferencia.length === 1 ? '' : 'es'} quedó sin Resumen de Flota del mismo mes para comparar (${sinReferencia.map(s => s.interno).join(', ')}).` : ''),
                 equipos: comparar.map(c => ({
                     interno: c.interno, denominacion: c.eq?.denominacion || '',
+                    cambio: c.cambio,
                     texto: c.cambio
                         ? `cambió: km ${c.difKm > 0 ? '+' : ''}${fmt(c.difKm)} · ralentí ${c.difRal > 0 ? '+' : ''}${fmt(c.difRal, 1)} hs · movimiento ${c.difMov > 0 ? '+' : ''}${fmt(c.difMov, 1)} hs`
                         : `${fmt(c.km)} km · ${fmt(c.ral, 1)} hs ralentí · ${fmt(c.mov, 1)} hs movimiento`,

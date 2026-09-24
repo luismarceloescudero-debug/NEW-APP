@@ -119,7 +119,7 @@ Correrlo **antes de commitear** cualquier cosa en `js/data/` o `js/parsers/`. Lo
 | `npm run auditar` | ¿Cada número se puede re-derivar de su propia definición? | minutos |
 
 **`npm test` — la suite de unit tests (`tests/*.test.mjs`, node:test, sin dependencias).**
-253 casos sobre las funciones puras de `js/data/` y `js/parsers/`. No reemplaza a ningún arnés
+273 casos sobre las funciones puras de `js/data/` y `js/parsers/`. No reemplaza a ningún arnés
 y ninguno lo reemplaza a él: los arneses corren el pipeline entero sobre los Excel reales y
 contestan *"¿el total cambió?"*; los tests fijan el **contrato de cada función por separado** y
 contestan *"¿esta pieza sigue haciendo lo que dice que hace?"* — sin planillas, en segundos, y
@@ -295,7 +295,7 @@ cuesta horas si no se sabe.
 
 1. El servidor local no manda `Cache-Control`, así que el navegador se queda con los módulos de
    una corrida anterior.
-2. **Esta app es una PWA: el Service Worker (`sw.js`) tiene su propio caché** (`flotacontrol-v2`)
+2. **Esta app es una PWA: el Service Worker (`sw.js`) tiene su propio caché** (`flotacontrol-v3`)
    y **atiende el pedido antes de que llegue a la red**. Por eso `fetch(m, { cache: 'reload' })`
    —que alcanza en el repo hermano— **acá no sirve**: el pedido pasa igual por el SW y vuelve la
    versión vieja. Verificado el 23/09/2026: un fix ya aplicado en disco y ya medido por el arnés
@@ -364,8 +364,13 @@ La denominación canónica sale del prefijo del interno (`getDenominacion()`).
    - `equipos` (el "maestro"): **persiste entre sesiones**, se fusiona sin destruir al reimportar
      (una subida nueva solo pisa campos que traen valor, y nunca pisa un campo que el usuario
      editó a mano — `editado_manual` marca cuáles están protegidos).
-   - `raw_records` (los "movimientos"): **se limpian en cada carga de página**, porque reprocesar
-     sin limpiar duplicaría litros/km/horas.
+   - `raw_records` (los "movimientos"): **persisten entre sesiones** desde el 24/09/2026. Antes
+     `app.js` los borraba en cada carga de página, lo que contradecía el aviso de privacidad y
+     hacía perder todo el análisis con solo recargar. Ahora solo se vacían con el botón dedicado
+     **"Vaciar datos"** (`reanalizar()` en app.js) o con la casilla "Reemplazar los movimientos ya
+     cargados" al procesar, que **sigue tildada por defecto**: destildarla suma archivos a lo ya
+     cargado, y un Resumen de Flota regenerado con otros valores se sumaría al viejo (el dedupe
+     solo descarta copias EXACTAS) y duplicaría km y horas.
    Otros stores guardan correcciones del usuario que sobreviven a la reimportación porque se
    indexan por una **huella estable** del registro (`huellaCarga()`), no por el equipo asignado.
 5. **`js/data/analyzer.js`** — reglas de negocio: alineación de períodos (`alinearCargasYGps`),
@@ -540,10 +545,43 @@ había nada que mover — pero el panel no lo explicaba. Ahora el bloque "Perío
 cuántos hay y de qué meses. Este cruce además encontró un dato real: `Resumen de viaje.xlsx` de
 CM-42 dice 63 km y el mensual ~4.540 (−4.476 km).
 
-**Ojo con recargar mientras se prueba.** `app.js` borra cargas y GPS en cada inicio ("datos de
-sesión": solo el maestro persiste). Recargar la página vacía el panel y hay que volver a subir las
-planillas. Es una decisión de diseño, pero **contradice el aviso de privacidad**, que dice que los
-datos siguen en la computadora al reabrir. Sin resolver: hay que decidir cuál de los dos cambia.
+**Los datos ya no se pierden al recargar (24/09/2026).** Se sacó el `clearMovimientos()` de
+`app.js`: cargas, GPS y demás movimientos persisten, igual que el maestro, y el aviso de privacidad
+vuelve a ser verdad. Verificado: 12.792 registros en la base después de recargar, y los mismos
+totales (678.429,5 L / 1.278.888,9 km). Para vaciar hay un botón dedicado, "Vaciar datos" (antes
+"Re-analizar", un nombre que no decía que borraba).
+
+**El Service Worker sirve JS y CSS primero desde caché: hay que subir `CACHE_VERSION` en cada
+release.** Estuvo en `flotacontrol-v2` desde la Fase 7 mientras el código seguía cambiando, así que
+quien ya había visitado la app **no volvía a bajar los archivos nuevos**: ninguno de los arreglos
+posteriores le llegaba. Dos tests lo protegen (`tests/configuracion.test.mjs`): que la versión no
+vuelva atrás, y que todo archivo de `js/` y `styles/` esté en `PRECACHE` (un módulo nuevo olvidado
+solo queda offline después de pedirse una vez con internet). Ahora está en `v3`. Subir el número
+sigue siendo manual: el test impide retroceder, no olvidarse de avanzar.
+
+**Alcance parcial de una carga (`js/data/alcance.js`).** Si lo subido cubre **un solo tipo de
+equipo** dentro de una flota con varios (caso real: los `Resumen de viaje` de seis camionetas,
+todos de agosto), la app **pregunta** en vez de decidir sola: analizar solo ese tipo y esos meses, o
+descartar el recorte y quedarse con el período común de toda la flota. Reglas:
+
+- **Siempre meses completos**: un resumen del 1 al 15 no autoriza a recortar a ese mes
+  (`mesesCompletosDeRango`). Septiembre sigue fuera del período por lo mismo.
+- **El recorte saca también los registros de los otros tipos**, no solo los equipos: si quedaran
+  como "no asignados" seguirían sumando a los totales (invariante 1b) y el recorte no recortaría nada.
+- **Un recorte activo tiene que verse**: chip "Alcance: solo CAMIONETA · 2026-08 — no es toda la
+  flota" con botón "Quitar" arriba del bloque de período.
+- La decisión se guarda en el store `config` (clave `alcance_decision`, sin cambiar el esquema) contra
+  la **firma** del conjunto de resúmenes: no vuelve a preguntar al reabrir, pero sí si se suben otros.
+  Verificado sobre los archivos reales: "Solo" → 8 camionetas, 01→31 de agosto, 32 cargas, y recarga
+  que reaplica el recorte sin preguntar; "Quitar" → 84 equipos, ene–ago, 4.424 cargas, 678.429,5 L.
+
+**Un dato dudoso deja de perderse: reclamar o dejarlo en seguimiento.** En el hallazgo
+`resumen_vs_flota`, las filas con diferencia (hoy CM-42: −4.476 km) ofrecen **Reclamar GPS** y
+**Marcar para seguimiento**, los dos con la diferencia y las posibles acciones ya escritas, más
+"Posibles acciones" (`CONSEJOS.resumen_vs_flota`) en la tarjeta. El seguimiento reutiliza el
+"Estado" del equipo (`abrirEstadoEquipo(interno, { categoria, motivo })`), que **sí persiste**:
+verificado que sobrevive a una recarga. El "ojito" de la tarjeta (`diagSeguimiento`) en cambio es
+solo de sesión; para algo que tiene que quedar, usar "Estado".
 
 ### Convención de escapado (XSS)
 

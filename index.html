@@ -56,8 +56,8 @@
             <button id="nav-datos"><i class="fa-solid fa-table-list"></i> <span>Base de Datos</span></button>
         </nav>
         <div class="header-actions">
-            <button id="btn-reanalizar" title="Borrar los datos guardados y volver a procesar">
-                <i class="fa-solid fa-rotate"></i><span class="btn-label">Re-analizar</span>
+            <button id="btn-reanalizar" title="Vaciar los datos cargados (cargas, GPS y demás movimientos) para empezar de nuevo. Recargar la página NO los borra.">
+                <i class="fa-solid fa-broom"></i><span class="btn-label">Vaciar datos</span>
             </button>
             <button id="btn-backup" class="btn-icon" title="Backup y restauración"><i class="fa-solid fa-box-archive"></i></button>
             <button id="btn-aviso-datos" class="btn-icon" title="¿Dónde quedan mis datos?"><i class="fa-solid fa-shield-halved"></i></button>
@@ -86,7 +86,7 @@
             <div class="upload-actions">
                 <label class="checkbox-line">
                     <input type="checkbox" id="chk-limpiar" checked>
-                    Borrar los movimientos anteriores antes de procesar (la base maestra y tus ediciones se conservan)
+                    Reemplazar los movimientos ya cargados por estos archivos (destildá para sumarlos a los que ya están; la base maestra y tus ediciones siempre se conservan)
                 </label>
                 <button id="btn-process-all" class="btn-success" disabled>
                     <i class="fa-solid fa-rocket"></i> Procesar y Analizar

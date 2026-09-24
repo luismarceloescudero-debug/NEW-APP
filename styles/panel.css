@@ -193,6 +193,18 @@
 .diag-val { display: flex; flex-direction: column; text-align: right; font-weight: 600; color: var(--text-primary); font-size: 0.85rem; }
 .diag-val small { font-weight: 400; color: var(--text-muted); font-size: 0.72rem; }
 
+/* Alineacion de las filas de equipo. La fila es flex con `justify-content: space-between`, asi que el
+   espacio sobrante se reparte segun el ancho del texto de la derecha, que cambia en cada renglon:
+   el nombre del equipo quedaba a una distancia distinta del borde en cada fila. Medido en la misma
+   lista: x = 544, 573, 552, 573, 575 (ralenti) y 240 a 296 (subutilizacion). Con el valor ocupando
+   todo el espacio libre (flex-grow) no queda nada que repartir y el nombre arranca siempre en el
+   mismo x. Se deja `space-between` como esta: las listas de "aceptados" tienen solo nombre + boton
+   y dependen de el para llevar el boton a la derecha. Solo en pantallas anchas: en <=720 px la fila
+   pasa a columna y un flex-basis de 0 se leeria como alto. */
+@media (min-width: 721px) {
+    .diag-lista li > .diag-val { flex: 1 1 0; }
+}
+
 /* El hallazgo "normalizaciones" (diagnostico.js) reutiliza esta fila de equipo para listar
    párrafos completos (qué se corrigió y con qué función), no un valor corto tipo "762 h en
    ralentí". `white-space: nowrap` de la regla de arriba está pensado para eso último — acá,

@@ -421,7 +421,7 @@ window.abrirActividadEstimada = (internos) => abrirActividadEstimada(internos, u
             return;
         }
 
-        renderKPIs(kpiEl, ultimoAnalisis.totales, fuentes);
+        renderKPIs(kpiEl, ultimoAnalisis.totales, fuentes, ultimoAnalisis.comparativas);
         renderDiagnostico(ultimoAnalisis, rawRecords);
         poblarFiltroDenominacion(ultimoAnalisis.filas);
         renderCards(cardsEl, ultimoAnalisis);
@@ -787,7 +787,7 @@ function nivelDetalleMetaEquipo(interno) {
     };
 }
 
-function renderKPIs(el, t, fuentes) {
+function renderKPIs(el, t, fuentes, comparativas = []) {
     let rango;
     if (t.periodo_desde && t.periodo_hasta) rango = `${t.periodo_desde} → ${t.periodo_hasta}`;
     else if (view.meses.size > 0) rango = rangoCorto();
@@ -808,6 +808,14 @@ function renderKPIs(el, t, fuentes) {
         ? ` · ${dh.dias} día${dh.dias === 1 ? '' : 's'} hábil${dh.dias === 1 ? '' : 'es'} de ${dh.totalCorridos} corridos${dh.completo ? '' : ' (sin feriados móviles confirmados para ese año)'}`
         : '';
 
+    // Los "Resumen de viaje" NO entran al cálculo: son la comparativa del Resumen de Flota (el mismo
+    // reporte de Wara, por unidad) y sumarlos duplicaría km y horas. Sin decirlo, quien los sube espera
+    // que muevan el período y ve que no pasa nada. Se declara cuántos hay y de qué meses.
+    const mesesResumenes = [...new Set((comparativas || []).flatMap(r => mesesDeRegistro(r)))].sort();
+    const resumenesTxt = comparativas && comparativas.length
+        ? ` · ${comparativas.length} ${comparativas.length === 1 ? 'resumen' : 'resúmenes'} de viaje (${esc(mesesResumenes.join(', '))}) solo para comparar: no cambian el período`
+        : '';
+
     el.innerHTML = `
         ${fuentesHTML(fuentes)}
 
@@ -817,7 +825,7 @@ function renderKPIs(el, t, fuentes) {
                 <span class="periodo-valor">${esc(rango)}</span>
             </div>
             <div class="periodo-detalle">
-                ${nf(t.cantidad_cargas)} cargas · ${nf(t.cantidad_gps)} GPS${t.cantidad_otros ? ` · ${nf(t.cantidad_otros)} otros` : ''} · ${t.equipos_con_datos}/${t.equipos} equipos con actividad${dhTxt}
+                ${nf(t.cantidad_cargas)} cargas · ${nf(t.cantidad_gps)} GPS${t.cantidad_otros ? ` · ${nf(t.cantidad_otros)} otros` : ''} · ${t.equipos_con_datos}/${t.equipos} equipos con actividad${dhTxt}${resumenesTxt}
                 <span class="kpi-calc"><i class="fa-solid fa-calculator"></i> ver cálculo</span>
             </div>
         </div>
@@ -3802,12 +3810,20 @@ function abrirElegirReferentes(interno, analisis) {
  * reabre esta ventana con el hallazgo recalculado, para poder encadenar decisiones sobre el
  * mismo grupo sin rearmar la selección.
  */
-function abrirRevisarDecidir(hallazgoId, analisis, rawRecords) {
+function abrirRevisarDecidir(hallazgoId, analisis, rawRecords, { trasAccion = false } = {}) {
     const container = document.getElementById('modals-container');
     if (!container) return;
     const h = generarDiagnostico(analisis.filas, analisis.totales, rawRecords, ralentiEstadosCache,
         noFlotaAceptadosCache, equiposExcluidosCache, extraDiag()).find(x => x.id === hallazgoId);
-    if (!h) { alert('Ese hallazgo ya no está: los datos cambiaron y se recalculó el diagnóstico.'); return; }
+    if (!h) {
+        // Cuando el hallazgo desaparece TRAS una acción de esta misma ventana (se aceptaron o resolvieron
+        // todos los equipos que quedaban), no es un dato que cambió por su cuenta: es el resultado buscado.
+        // Antes se avisaba igual con "los datos cambiaron", y un éxito se leía como un error. El panel ya
+        // quedó recalculado (la tarjeta no está y los totales bajaron), así que no hace falta decir nada.
+        // Si el usuario lo abrió a mano y no existe, el aviso sí corresponde.
+        if (!trasAccion) alert('Ese hallazgo ya no está: los datos cambiaron y se recalculó el diagnóstico.');
+        return;
+    }
 
     // `h.equipos` viene recortado para la tarjeta (10-15 filas); `internos_todos` trae el grupo
     // completo. Para decidir en bloque hace falta el grupo entero — si no, un hallazgo de 40
@@ -3932,7 +3948,7 @@ function abrirRevisarDecidir(hallazgoId, analisis, rawRecords) {
 
     // Al volver de una acción se reabre esta ventana: encadenar decisiones sobre el mismo grupo
     // es el caso normal, y obligar a reabrirla a mano es justamente lo que se vino a resolver.
-    const reabrir = async () => { await renderPanel(); abrirRevisarDecidir(hallazgoId, ultimoAnalisis, rawRecords); };
+    const reabrir = async () => { await renderPanel(); abrirRevisarDecidir(hallazgoId, ultimoAnalisis, rawRecords, { trasAccion: true }); };
 
     modal.querySelectorAll('.btn-rev-accion').forEach(b => {
         b.addEventListener('click', async () => {

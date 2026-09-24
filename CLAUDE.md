@@ -510,6 +510,41 @@ toque lee la misma foto vieja y el último `put()` en resolver pisa lo que los a
 de escribir. Así se perdió el 43 % del volumen de Loop (31.822 m³ en vez de ~55.365) **sin un solo
 error en ningún lado**. Lo encontró un arnés, no una relectura del código.
 
+### Tres cosas de la interfaz que costaron una sesión (24/09/2026)
+
+Salieron de un reporte de usuario con capturas de la app desplegada. Las tres se **reprodujeron en
+el navegador con las planillas reales antes de tocar nada**, y en dos el reporte apuntaba a otra
+causa que la real.
+
+**Las filas de equipo se alinean con `flex-grow`, no con `space-between`.** `.diag-lista li` es
+`flex` con `justify-content: space-between`: el espacio sobrante se reparte según el ancho del
+texto de la derecha, que cambia en cada renglón, y el nombre del equipo caía a una distancia
+distinta del borde en cada fila. Medido: x = 544, 573, 552, 573, 575 en la misma lista de ralentí.
+El arreglo es `.diag-lista li > .diag-val { flex: 1 1 0 }` (solo ≥721 px; en móvil la fila pasa a
+columna y un `flex-basis: 0` se leería como alto). **No** cambiar `justify-content`: las listas de
+"aceptados" tienen solo nombre + botón y dependen de `space-between` para llevar el botón a la
+derecha. Después: dispersión 0 en las cuatro listas medidas.
+
+**Que un hallazgo desaparezca tras una acción no es un error.** El reporte era "no puedo marcar
+aceptable el ralentí". El botón por fila **funcionaba** (TR34: 7.322 → 6.478 h). Lo que fallaba era
+el final: al aceptar el último equipo del grupo, `reabrir()` volvía a abrir el modal "Revisar y
+decidir" y este alertaba *"Ese hallazgo ya no está: los datos cambiaron"* — un éxito informado
+como error. `abrirRevisarDecidir` recibe ahora `{ trasAccion }` y, si el hallazgo no existe después
+de una acción, vuelve sin cartel. Abierto a mano y sin existir, el aviso se mantiene.
+
+**Los "Resumen de viaje" no mueven el período, a propósito, y ahora la app lo dice.** Son
+`solo_comparativa` (analyzer.js): el mismo reporte de Wara que el Resumen de Flota mensual, y sumarlos
+duplicaría km y horas. Se cruzan contra el mensual en el hallazgo `resumen_vs_flota`. El reporte era
+"el período mostrado es otro": los 6 archivos eran de **agosto**, ya dentro de ene–ago, así que no
+había nada que mover — pero el panel no lo explicaba. Ahora el bloque "Período analizado" declara
+cuántos hay y de qué meses. Este cruce además encontró un dato real: `Resumen de viaje.xlsx` de
+CM-42 dice 63 km y el mensual ~4.540 (−4.476 km).
+
+**Ojo con recargar mientras se prueba.** `app.js` borra cargas y GPS en cada inicio ("datos de
+sesión": solo el maestro persiste). Recargar la página vacía el panel y hay que volver a subir las
+planillas. Es una decisión de diseño, pero **contradice el aviso de privacidad**, que dice que los
+datos siguen en la computadora al reabrir. Sin resolver: hay que decidir cuál de los dos cambia.
+
 ### Convención de escapado (XSS)
 
 No hay módulo compartido: `const esc = (s) => ...` está duplicado **literal** al inicio de cada

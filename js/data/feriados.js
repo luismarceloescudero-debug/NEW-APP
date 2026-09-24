@@ -49,6 +49,20 @@ function feriadosDelAnio(anio) {
     return set;
 }
 
+/**
+ * Fecha de un Date como "YYYY-MM-DD", leyendo sus partes LOCALES.
+ *
+ * No se puede usar `toISOString().slice(0,10)` para esto: los Date de acá se construyen a
+ * medianoche local (`new Date('2026-06-20T00:00:00')`) y toISOString los pasa a UTC, así que
+ * al este de UTC el string sale corrido un día para atrás y el chequeo de feriado se hacía
+ * sobre el día anterior. En UTC-3 y en UTC daba bien de casualidad — por eso el bug sobrevivió
+ * hasta que lo encontró `tests/feriados-zona-horaria.test.mjs`. Un día hábil es un día del
+ * calendario, no un instante: nunca puede depender de dónde corre el cálculo.
+ */
+function isoLocal(d) {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 /** ¿La fecha ISO (YYYY-MM-DD) cae en fin de semana? */
 export function esFinDeSemana(fechaISO) {
     const d = new Date(fechaISO + 'T00:00:00');
@@ -101,7 +115,7 @@ export function diasHabiles(desdeISO, hastaISO) {
     let completo = true;
     const cur = new Date(desde);
     while (cur <= hasta) {
-        const iso = cur.toISOString().slice(0, 10);
+        const iso = isoLocal(cur);
         const anio = cur.getFullYear();
         if (!FERIADOS_MOVILES[anio]) completo = false;
         totalCorridos++;

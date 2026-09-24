@@ -576,7 +576,7 @@ function unirDistinto(a, b) {
  * Nunca se pierde el dato original: queda en `_importe_original` y el registro se marca con
  * `_importe_recompuesto` para poder auditarlo desde Base de Datos.
  */
-function importeDeCarga(row, fechaVal, litros, precio, mapeo) {
+export function importeDeCarga(row, fechaVal, litros, precio, mapeo) {
     const crudo = parseNumber(val(row, 'importe', ['COSTO TOTAL', 'IMPORTE', 'MONTO'], mapeo));
     const fechaNum = typeof fechaVal === 'number' ? fechaVal : NaN;
     const esLaFechaDeLaFila = isFinite(fechaNum) && isFinite(crudo) && Math.abs(crudo - fechaNum) < 1e-9;

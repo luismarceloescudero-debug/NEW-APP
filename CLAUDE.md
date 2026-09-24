@@ -101,21 +101,94 @@ Desde Claude Code, la preview de este repo se llama **`limpio`** (`preview_start
 las configs del repo hermano y levanta el proyecto equivocado — la app carga bien y no refleja
 ningún cambio, que es el síntoma más confuso posible.
 
-### Verificar un cambio (no hay suite de tests: esto es el sustituto)
+### Verificar un cambio
 
 ```bash
-npm run probar      # los cuatro arneses, en orden de velocidad
+npm run probar      # unit tests + los cinco arneses, en orden de velocidad
 ```
 
-Correrlo **antes de commitear** cualquier cosa en `js/data/` o `js/parsers/`. Los cinco:
+Correrlo **antes de commitear** cualquier cosa en `js/data/` o `js/parsers/`. Los seis:
 
-| Arnés | Qué pregunta | Velocidad |
+| Comando | Qué pregunta | Velocidad |
 |---|---|---|
+| `npm test` | ¿Cada función pura sigue cumpliendo el contrato que tiene escrito? | ~5 s |
 | `npm run declarados` | ¿Las funciones puras siguen dando lo mismo? Sin Excel, sin IndexedDB. | instantáneo |
 | `npm run importacion` | ¿La Fase 7 sigue reconociendo planillas inventadas? | rápido |
 | `npm run unidades` | ¿Los dos lados de cada cruce están en la misma unidad y formato? | minutos |
 | `npm run verificar` | ¿Los totales siguen coincidiendo con `tools/invariantes.json`? | minutos |
 | `npm run auditar` | ¿Cada número se puede re-derivar de su propia definición? | minutos |
+
+**`npm test` — la suite de unit tests (`tests/*.test.mjs`, node:test, sin dependencias).**
+225 casos sobre las funciones puras de `js/data/` y `js/parsers/`. No reemplaza a ningún arnés
+y ninguno lo reemplaza a él: los arneses corren el pipeline entero sobre los Excel reales y
+contestan *"¿el total cambió?"*; los tests fijan el **contrato de cada función por separado** y
+contestan *"¿esta pieza sigue haciendo lo que dice que hace?"* — sin planillas, en segundos, y
+apuntando al renglón exacto cuando algo se rompe. (Los ~4 s los gasta casi enteros
+`feriados-zona-horaria.test.mjs`, que levanta un proceso de Node por zona; el resto corre en
+menos de medio segundo.)
+
+Cada caso está escrito desde la especificación (los comentarios del código y este archivo), no
+desde releer la implementación. Esa es la regla que los hace valer: un test derivado del código
+solo confirma que el código hace lo que hace. Cubren, entre otros, todos los bugs que ya
+ocurrieron y están documentados acá: `"9.5"` leído como 95, `"07:30"` leído como 7,
+`"3 days, 10:53:03"` leído como 10:53, `"1/1/2026, 0:00"` guardado como `"2026,-01-01"`,
+`"MX-108-VL"` clasificado como patente, `"OXZ 911"` partido en dos, la mediana de una lista par
+devolviendo el de arriba, y el GPS Ene–Jul contado como un solo mes de enero.
+
+Al agregar una función pura nueva a `js/data/` o `js/parsers/`, el test va en el mismo commit.
+
+**Qué corre en CI y qué no — el desbalance que hay que vigilar.** De los seis comandos, solo
+tres corren sin los Excel reales y por lo tanto en CI: `npm test`, `declarados` e `importacion`.
+`unidades`, `verificar` y `auditar` necesitan las planillas, que viven fuera del repo a
+propósito. Un mutation testing del 24/09/2026 (87 mutaciones sobre los siete módulos, 51
+muertas) encontró la consecuencia: **las tres invariantes, en los dos lugares donde se aplican
+de verdad —`calculateMetrics()` y `calcularExceso()`—, estaban protegidas únicamente por
+`auditar`.** Un PR podía pasar el CI en verde rompiendo la invariante 1.
+
+`tests/calculo-publicado.test.mjs` cierra eso: las dos funciones son puras y reciben arrays, así
+que no necesitan ni Excel ni IndexedDB. Verificado con las siete mutaciones que antes sobrevivían
+—factor 100→10, ratio sobre totales en vez de la base alineada (L/100Km y L/Hora), `total_litros`
+recortado a la base, el signo de `desvio_pct`, el signo de `exceso_litros`, y `calcularExceso`
+midiendo sobre `total_litros`—: **las siete mueren ahora en `npm test`**.
+
+La regla que queda: **si una función pura participa de un número que la app publica, su test va
+en `tests/`, no solo en un arnés.** Lo que sí conviene dejar en un arnés y no volver unit test:
+`autocorreccion.js` entero (escribe en IndexedDB y lo que importa es el efecto sobre la base),
+`parseXLSX`/`inspeccionarArchivo` (necesitan SheetJS y `FileReader`), la coherencia de unidades
+entre los dos lados de un cruce, y los totales de flota contra la línea base.
+
+Lo que el mismo ejercicio dejó **sin cubrir y sigue abierto**: `utilizacion()`,
+`coberturaEquipo()` (los "días distintos con carga", que ya produjeron un bug real),
+`actividadImplicita()`, `indexarMaestro()`/`resolverEquipo()` (la doble clave interno+dominio),
+y el filtro de prefijo conocido de `sugerirPosibleTypo()`. Aparte: `tools/auditar-declarados.mjs`
+ya es una suite de unit tests con otro nombre —46 chequeos sobre funciones puras, sin Excel, en
+menos de un segundo— y convendría migrarlo a `node:test` para que deje de parecer que
+`sugerirMeta()` o `jornadaPonderada()` no tienen test.
+
+**Un día del calendario no se convierte con `toISOString()`.** El primer bug que encontró esta
+suite (24/09/2026) fue justamente ese: `diasHabiles()` armaba el día con
+`cur.toISOString().slice(0,10)` mientras construía `cur` a medianoche **local**. toISOString
+pasa a UTC, así que al este de UTC el string salía corrido un día para atrás y el chequeo de
+feriado se hacía sobre el día anterior — la semana del 1 al 7 de junio daba 4 días hábiles en
+vez de 5, y un sábado feriado se contaba como sábado trabajado. En UTC-3 (acá) y en UTC (el CI)
+daba bien de casualidad, que es por lo que sobrevivió. Hoy se usa `isoLocal()` en feriados.js.
+
+Para una fecha que es un **instante** (`fecha_alta_automatica`, `actualizado`, el `exportedAt`
+del backup) `new Date().toISOString()` está bien y no hay que tocarlo. El problema es solo
+convertir un Date construido desde partes locales a un día del calendario. Quedan dos usos
+menores del mismo patrón, de bajo impacto y sin arreglar: `panel.js:536` calcula el mes en
+curso con `toISOString()` (en UTC-3, después de las 21:00 del último día del mes devuelve el
+mes siguiente) y tres lugares arman nombres de archivo con la fecha UTC.
+
+`tests/feriados-zona-horaria.test.mjs` cubre la regresión corriendo la función en subprocesos
+con `TZ` forzada. Tiene que ser un subproceso: **Node fija la zona horaria al arrancar**, así
+que tocar `process.env.TZ` dentro de un test que ya importó `Date` no hace nada y el test daría
+verde sin probar nada. El archivo incluye una guarda que falla si las zonas no se diferencian.
+
+```bash
+npm test                                  # toda la suite
+node --test tests/feriados.test.mjs       # un solo archivo
+```
 
 **Ninguno reemplaza a otro, y esto importa.** `verificar` compara contra una línea base
 congelada: detecta un número que **cambió**, nunca una fórmula que estuvo **mal desde el día

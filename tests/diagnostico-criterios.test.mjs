@@ -10,7 +10,8 @@ import assert from 'node:assert/strict';
 
 import {
     mediana, categoriaRalenti, esCamioneta, confiabilidad, diasHabilesDeMeses,
-    huerfanoAporta, MIN_CARGAS_CONFIABLE, COBERTURA_MINIMA_PCT, OPERA_ESTACIONARIO, ESPERA_OPERATIVA
+    huerfanoAporta, coberturaEquipo, utilizacion,
+    MIN_CARGAS_CONFIABLE, COBERTURA_MINIMA_PCT, OPERA_ESTACIONARIO, ESPERA_OPERATIVA
 } from '../js/data/diagnostico.js';
 
 // --- mediana ------------------------------------------------------------------------------
@@ -173,6 +174,156 @@ test('la cobertura no se recorta a 100%: pasarse es justamente lo que hay que de
         { desde: '2026-06-01', hasta: '2026-06-30' }
     );
     assert.ok(r.cobertura.pct > 100, `pct fue ${r.cobertura.pct}`);
+});
+
+// --- coberturaEquipo: dias distintos con carga, no cantidad de cargas ----------------------
+
+const filaCobertura = (cargas, extra = {}) =>
+    ({ metrics: { cantidad_cargas: cargas.length }, cargas, ...extra });
+
+test('coberturaEquipo cuenta dias DISTINTOS con carga, no cantidad de cargas', () => {
+    // Bug historico documentado en diagnostico.js: antes esta funcion contaba cargas y
+    // confiabilidad() contaba dias, y la tarjeta mostraba "53 de 60" contra "46 de 60" para
+    // el mismo equipo y el mismo periodo. Dos cargas el mismo dia (doble turno, carga parcial
+    // y despues completa) tienen que seguir siendo UN dia de cobertura, no dos.
+    const cargas = [
+        { fecha: '2026-06-01' }, { fecha: '2026-06-01' },
+        { fecha: '2026-06-02' }, { fecha: '2026-06-03' }
+    ];
+    const r = coberturaEquipo(filaCobertura(cargas), { desde: '2026-06-01', hasta: '2026-06-30' });
+    assert.equal(r.diasConCarga, 3, 'dos cargas el mismo dia cuentan como un solo dia');
+    assert.equal(r.cargas, 4, 'el campo cargas si refleja la cantidad, aparte de diasConCarga');
+});
+
+test('coberturaEquipo da el mismo 36% que confiabilidad() para el mismo caso: es la misma cuenta', () => {
+    // Hoy las dos funciones cuentan dias, A PROPOSITO (ver comentario de coberturaEquipo). Si
+    // alguna volviera a contar cargas, este test y "el umbral de cobertura minima..." de mas
+    // arriba en este archivo se desalinearian.
+    const cargas = Array.from({ length: 8 }, (_, i) =>
+        ({ fecha: `2026-06-${String(i + 1).padStart(2, '0')}` }));
+    const r = coberturaEquipo(filaCobertura(cargas), { desde: '2026-06-01', hasta: '2026-06-30' });
+    assert.equal(r.diasConCarga, 8);
+    assert.equal(r.diasPonderados, 22.5);
+    assert.equal(r.diasTrabajados, 22.5);
+    assert.equal(r.pct, 36);
+    assert.equal(r.exceso, false);
+
+    const cruzado = confiabilidad(
+        fila({ cantidad_gps: 6 }, { cargas }), { desde: '2026-06-01', hasta: '2026-06-30' }
+    );
+    assert.equal(r.pct, cruzado.cobertura.pct, 'coberturaEquipo y confiabilidad deben leer el mismo %');
+});
+
+test('coberturaEquipo descuenta del denominador los rangos fuera de servicio', () => {
+    // 15 al 19 de junio de 2026: lun a vie, sin sabado en el rango, y el 17 es feriado
+    // (Gral. Guemes) -> 4 dias habiles ponderados que salen del denominador.
+    const cargas = Array.from({ length: 8 }, (_, i) =>
+        ({ fecha: `2026-06-${String(i + 1).padStart(2, '0')}` }));
+    const r = coberturaEquipo(
+        filaCobertura(cargas), { desde: '2026-06-01', hasta: '2026-06-30' },
+        [{ desde: '2026-06-15', hasta: '2026-06-19' }]
+    );
+    assert.equal(r.diasFueraServicio, 4);
+    assert.equal(r.diasTrabajados, 18.5);
+    assert.equal(r.pct, 43);
+});
+
+test('coberturaEquipo no se recorta a 100%: pasarse es justamente lo que hay que poder detectar', () => {
+    // Mismas 8 fechas, pero un periodo de un solo dia habil como denominador: el pct se dispara.
+    const cargas = Array.from({ length: 8 }, (_, i) =>
+        ({ fecha: `2026-06-${String(i + 1).padStart(2, '0')}` }));
+    const r = coberturaEquipo(filaCobertura(cargas), { desde: '2026-06-01', hasta: '2026-06-01' });
+    assert.ok(r.pct > 100, `pct fue ${r.pct}`);
+    assert.equal(r.exceso, true);
+});
+
+test('coberturaEquipo devuelve null sin ninguna carga', () => {
+    assert.equal(coberturaEquipo(filaCobertura([])), null);
+});
+
+test('coberturaEquipo usa el rango propio del equipo cuando no se le pasa un periodo de flota', () => {
+    // Sin `periodo` explicito, el denominador sale de la union de fechas de cargas y GPS del
+    // propio equipo (diagnostico.js:399-407) — no del periodo de toda la flota. Esta rama
+    // quedaba sin ejercitar: el unico test anterior sin periodo cortaba antes, por 0 cargas.
+    const cargas = [{ fecha: '2026-06-01' }, { fecha: '2026-06-05' }, { fecha: '2026-06-10' }];
+    const gps = [{ fecha: '2026-06-15' }];
+    const r = coberturaEquipo({ metrics: { cantidad_cargas: 3 }, cargas, gps });
+    // Rango propio: 01/06 al 15/06/2026 (15 dias corridos, 11 habiles, 2 sabados).
+    assert.equal(r.diasConCarga, 3);
+    assert.equal(r.totalCorridos, 15);
+    assert.equal(r.diasPonderados, 12);
+    assert.equal(r.pct, 25);
+});
+
+test('coberturaEquipo devuelve null cuando el equipo no tiene ni dos fechas para armar un rango propio', () => {
+    // Una sola fecha entre cargas y GPS no alcanza para tener un "desde" y un "hasta" propios.
+    const r = coberturaEquipo({ metrics: { cantidad_cargas: 1 }, cargas: [{ fecha: '2026-06-01' }], gps: [] });
+    assert.equal(r, null);
+});
+
+// --- utilizacion: horas de GPS por dia habil contra la jornada de referencia ----------------
+
+const filaUtilizacion = (horasAlineadas, deno = 'MIXER') => ({
+    equipo: { denominacion: deno },
+    metrics: { horas_alineadas: horasAlineadas, alineacion: { meses: ['2026-06'] } }
+});
+
+test('utilizacion clasifica muy_baja por debajo del 60% del minimo de la jornada', () => {
+    // Mixer, jornada de referencia 10-12 hs. 90 hs alineadas / 22,5 dias ponderados de junio
+    // 2026 = 4 hs/dia. 4 < 10*0.6=6 -> muy_baja.
+    const r = utilizacion(filaUtilizacion(90));
+    assert.equal(r.hsPorDia, 4);
+    assert.equal(r.estado, 'muy_baja');
+});
+
+test('utilizacion clasifica baja entre el 60% del minimo y el minimo', () => {
+    const r = utilizacion(filaUtilizacion(157.5));
+    assert.equal(r.hsPorDia, 7);
+    assert.equal(r.estado, 'baja');
+});
+
+test('utilizacion clasifica normal dentro del rango de referencia', () => {
+    const r = utilizacion(filaUtilizacion(225));
+    assert.equal(r.hsPorDia, 10);
+    assert.equal(r.estado, 'normal');
+});
+
+test('utilizacion clasifica alta por encima del 125% del maximo', () => {
+    // 12*1.25 = 15: 16 hs/dia lo pasa.
+    const r = utilizacion(filaUtilizacion(360));
+    assert.equal(r.hsPorDia, 16);
+    assert.equal(r.estado, 'alta');
+});
+
+test('utilizacion NO marca alta a un equipo apenas por encima del maximo, antes del margen del 125%', () => {
+    // 13 hs/dia supera el maximo de la jornada (12) pero no llega al umbral de alta (12*1.25=15):
+    // sigue siendo normal. Sin este caso, bajar el margen del 125% al 100% no se nota, porque
+    // el caso de arriba (16 hs/dia) queda por encima de los dos umbrales igual.
+    const r = utilizacion(filaUtilizacion(292.5));
+    assert.equal(r.hsPorDia, 13);
+    assert.equal(r.estado, 'normal');
+});
+
+test('utilizacion clasifica no_representativa por encima de 24 hs por dia: problema de dato', () => {
+    // Mas de 24 hs por dia ponderado es un GPS reportando horas imposibles, no una jornada real.
+    const r = utilizacion(filaUtilizacion(600));
+    assert.ok(Math.abs(r.hsPorDia - 26.666666) < 0.001);
+    assert.equal(r.estado, 'no_representativa');
+});
+
+test('utilizacion devuelve null cuando el equipo no sigue una jornada laboral', () => {
+    // Un grupo electrogeno puede quedar encendido de corrido, incluido fin de semana: medirlo
+    // en "horas por dia habil" da un numero imposible porque el numerador cuenta dias corridos
+    // y el denominador solo los habiles. jornadaEsperada() corta antes de calcular nada.
+    assert.equal(utilizacion(filaUtilizacion(200, 'GRUPO ELECTROGENO')), null);
+});
+
+test('utilizacion devuelve null sin horas para dividir', () => {
+    const f = {
+        equipo: { denominacion: 'MIXER' },
+        metrics: { horas_alineadas: 0, total_horas: 0, alineacion: { meses: ['2026-06'] } }
+    };
+    assert.equal(utilizacion(f), null);
 });
 
 // --- dias habiles de un conjunto de meses ------------------------------------------------------

@@ -228,6 +228,16 @@ test('sugerirPosibleTypo se calla cuando el prefijo ya es conocido', () => {
     assert.equal(sugerirPosibleTypo('TR99', ['TR20', 'TR21']), null);
 });
 
+test('sugerirPosibleTypo se calla si el prefijo ya aparece en internosReales, aunque no este en TIPO_POR_PREFIJO', () => {
+    // El test de arriba (TR99) ejercita solo la primera mitad del ||: TR ya esta en
+    // TIPO_POR_PREFIJO y hay cortocircuito. ZZ no esta mapeado, pero ZZ01 ya figura en
+    // internosReales con el mismo prefijo: aca decide el .some() de la segunda mitad. Si esa
+    // clausula se rompiera, 'ZZ2' y 'ZZ1' (claves normalizadas) quedan a una edicion de
+    // distancia y la funcion devolveria 'ZZ01' como sugerencia falsa sobre un equipo que ya
+    // existe.
+    assert.equal(sugerirPosibleTypo('ZZ02', ['ZZ01']), null);
+});
+
 test('sugerirPosibleTypo no sugiere nada cuando la diferencia es de dos o mas ediciones', () => {
     assert.equal(sugerirPosibleTypo('ZZ99', ['XX01', 'TR20']), null);
 });

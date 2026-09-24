@@ -119,7 +119,7 @@ Correrlo **antes de commitear** cualquier cosa en `js/data/` o `js/parsers/`. Lo
 | `npm run auditar` | ¿Cada número se puede re-derivar de su propia definición? | minutos |
 
 **`npm test` — la suite de unit tests (`tests/*.test.mjs`, node:test, sin dependencias).**
-225 casos sobre las funciones puras de `js/data/` y `js/parsers/`. No reemplaza a ningún arnés
+253 casos sobre las funciones puras de `js/data/` y `js/parsers/`. No reemplaza a ningún arnés
 y ninguno lo reemplaza a él: los arneses corren el pipeline entero sobre los Excel reales y
 contestan *"¿el total cambió?"*; los tests fijan el **contrato de cada función por separado** y
 contestan *"¿esta pieza sigue haciendo lo que dice que hace?"* — sin planillas, en segundos, y
@@ -157,13 +157,39 @@ en `tests/`, no solo en un arnés.** Lo que sí conviene dejar en un arnés y no
 `parseXLSX`/`inspeccionarArchivo` (necesitan SheetJS y `FileReader`), la coherencia de unidades
 entre los dos lados de un cruce, y los totales de flota contra la línea base.
 
-Lo que el mismo ejercicio dejó **sin cubrir y sigue abierto**: `utilizacion()`,
-`coberturaEquipo()` (los "días distintos con carga", que ya produjeron un bug real),
-`actividadImplicita()`, `indexarMaestro()`/`resolverEquipo()` (la doble clave interno+dominio),
-y el filtro de prefijo conocido de `sugerirPosibleTypo()`. Aparte: `tools/auditar-declarados.mjs`
-ya es una suite de unit tests con otro nombre —46 chequeos sobre funciones puras, sin Excel, en
-menos de un segundo— y convendría migrarlo a `node:test` para que deje de parecer que
-`sugerirMeta()` o `jornadaPonderada()` no tienen test.
+Lo que el mismo ejercicio dejó sin cubrir **se cerró el 24/09/2026**: `utilizacion()` y
+`coberturaEquipo()` (los "días distintos con carga") se sumaron a
+`tests/diagnostico-criterios.test.mjs`; `indexarMaestro()`/`resolverEquipo()` (la doble clave
+interno+dominio) tienen archivo propio, `tests/analyzer-maestro.test.mjs`; y el filtro de
+prefijo conocido de `sugerirPosibleTypo()` sumó el caso `ZZ02`/`['ZZ01']` a
+`tests/normalizer-identidad.test.mjs`, para ejercitar la mitad del `||` que el caso viejo
+(`TR99`) no tocaba por cortocircuito.
+
+**Segunda vuelta de mutation testing, dirigida solo a lo recién cubierto.** El `/ship` de ese
+mismo cierre hizo mutar a mano las funciones nuevas y encontró 10 mutaciones que `npm test`
+todavía no agarraba — cobertura real pero incompleta, no bugs en producción. Se cerraron las 4
+de mayor riesgo de negocio:
+
+- `coberturaEquipo()` sin `periodo` explícito (el rango propio del equipo, uniendo fechas de
+  `cargas` y `gps`) no tenía ningún test — el único caso sin período cortaba antes por 0 cargas.
+- `indexarMaestro()`/`resolverEquipo()` nunca se probaban con `interno_key`/`dominio_key` **ya
+  calculados** (solo con `interno`/`dominio` crudos): la asimetría de la invariante 1
+  (interno pisa sin chequear, dominio no) podía romperse ahí sin que nada avisara.
+- Un equipo del maestro sin `interno` ni `dominio` (fila vacía real en `Equipos.xlsx`) podía
+  colarse al índice bajo una clave vacía sin que ningún test lo notara.
+
+Quedan 6 sin cerrar, todas dentro de `utilizacion()` y de menor riesgo (ramas internas del
+cálculo, no la lectura de datos): la rama `usaAlineadas = false` (`total_horas` +
+`alin.meses_gps` en vez de `horas_alineadas`), un rango de `alineacion.meses` de más de un mes,
+el fallback a `mesesEntre()` cuando no hay `meses`, los bordes exactos de los umbrales (`=
+min*0.6`, `= max*1.25`), el campo `pct` de la respuesta (nunca asserteado), y el guard
+`totalCorridos <= 0`. Ningún fixture actual setea `equipo.centro_costo`, así que tampoco se
+prueba la rama por sector ni `JORNADA_EXCEPCIONES` (el caso de ÁRIDOS que motivó la función).
+
+Lo único que sigue completamente abierto de la lista original: `actividadImplicita()`.
+Aparte: `tools/auditar-declarados.mjs` ya es una suite de unit tests con otro nombre —46
+chequeos sobre funciones puras, sin Excel, en menos de un segundo— y convendría migrarlo a
+`node:test` para que deje de parecer que `sugerirMeta()` o `jornadaPonderada()` no tienen test.
 
 **Un día del calendario no se convierte con `toISOString()`.** El primer bug que encontró esta
 suite (24/09/2026) fue justamente ese: `diasHabiles()` armaba el día con

@@ -295,7 +295,7 @@ cuesta horas si no se sabe.
 
 1. El servidor local no manda `Cache-Control`, así que el navegador se queda con los módulos de
    una corrida anterior.
-2. **Esta app es una PWA: el Service Worker (`sw.js`) tiene su propio caché** (`flotacontrol-v3`)
+2. **Esta app es una PWA: el Service Worker (`sw.js`) tiene su propio caché** (`flotacontrol-v4`)
    y **atiende el pedido antes de que llegue a la red**. Por eso `fetch(m, { cache: 'reload' })`
    —que alcanza en el repo hermano— **acá no sirve**: el pedido pasa igual por el SW y vuelve la
    versión vieja. Verificado el 23/09/2026: un fix ya aplicado en disco y ya medido por el arnés
@@ -424,14 +424,35 @@ En `js/data/normalizer.js`, aplicadas en el import por `js/parsers/xlsx-parser.j
 de `sugerirPosibleTypo()` —que solo sugiere, para que una persona confirme— estas ya están
 confirmadas contra el comprobante por HSV y se aplican directo:
 
-- **`GR01` → `GE01`**: es el caso real que motivó `sugerirPosibleTypo()` (un chofer tipeó GR01 en
-  vez de GE01 esa semana). Confirmado: deja de ser un hallazgo.
+- **`GR01` → `GE01`**: ya NO es una corrección fija (desde el 25/09/2026). Es el caso real que
+  motivó `sugerirPosibleTypo()`; ahora lo resuelve `resolucion-identidad.js` con evidencia (ver
+  "Resolución automática de identidad") y queda revertible.
 - **`TP0101` → `TP01`**: un cero de más. No lo agarraba `sugerirPosibleTypo()` porque el prefijo
   `TP` ya es conocido, así que quedaba aceptado en silencio como gasto fuera de flota.
 - **`CALOVENTOR` / `MANTENIMIENTO` / `SURTIDOR` → `CL02` / `CL03` / `CL04`**: no son un equipo
   rodante, son cargas del caloventor de una sede. HSV tiene uno por sede, así que el **lugar de
   carga de esa misma fila** resuelve cuál sin ambigüedad: Godoy Cruz → CL02, Tunuyán → CL03,
   San Martín → CL04.
+
+### Resolución automática de identidad (25/09/2026)
+
+`js/data/resolucion-identidad.js` (puro, con tests) decide y `autocorreccion.js` aplica, anota en
+`accionesAutomaticas` y **permite Deshacer**. Los registros guardan de dónde venían
+(`_alias_de`, `_dominio_original`), así que revertir es exacto. Tres reglas:
+
+- **Tipeo con evidencia**: el código está a una letra de un interno real, su prefijo no existe en la
+  flota Y comparte lugar de carga o centro de costo con él. Sin esa pista no se toca. Medido: GR01
+  → GE01 (ARIDOS / AMZA).
+- **Servicio de planta escrito con su nombre**: LIMPIEZA en Godoy Cruz → LM01, CALDERA en Tunuyán →
+  CA01 (`SERVICIO_POR_SEDE`). Hoy los datos ya traen el código, así que no dispara.
+- **Un interno con dos patentes**: gana la del maestro; si no, la que duplica a la otra. Medido:
+  MX59 → ONK194 (23 filas), BM14 → GNG059 (6).
+
+El hallazgo "N equipos del maestro no figuran en Cargas" se **quitó a propósito**: un equipo sin
+cargas no se analiza y no es un error (`totales.universo.fuera_principal` sigue existiendo).
+Verificado con `npm run verificar`: totales idénticos (678.429,5 L / 1.278.888,9 km / 83.189,2 hs).
+Cuidado: `CA`, `CL` y `LM` SÍ se dan de alta solos (están en las reglas de cálculo); la rama que
+acepta como "gasto de planta" un prefijo con nombre pero sin regla hoy no se dispara con estos datos.
 
 ### Un mes cubierto a medias no entra al ratio
 

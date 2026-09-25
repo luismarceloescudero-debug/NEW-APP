@@ -5,7 +5,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 
 const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 
@@ -39,4 +39,28 @@ test('npm run probar corre los unit tests primero', () => {
     for (const arnes of ['declarados', 'importacion', 'unidades', 'verificar', 'auditar']) {
         assert.ok(probar.includes(arnes), `probar dejo de correr ${arnes}`);
     }
+});
+
+test('el service worker precachea todos los modulos de js/ y las hojas de styles/', () => {
+    // La app es una PWA y el service worker sirve JS y CSS PRIMERO desde cache. Un archivo que no este en
+    // PRECACHE solo queda disponible offline despues de pedirse una vez con internet: agregar un modulo
+    // nuevo (como js/data/alcance.js) y olvidarse de sumarlo es el error que este test impide.
+    const sw = readFileSync(new URL('../sw.js', import.meta.url), 'utf8');
+    const listados = new Set([...sw.matchAll(/'\.\/((?:js|styles)\/[^']+\.(?:js|css))'/g)].map(m => m[1]));
+    const enDisco = ['js', 'styles']
+        .flatMap(dir => readdirSync(new URL(`../${dir}/`, import.meta.url), { recursive: true })
+            .map(f => `${dir}/${String(f).replace(/\\/g, '/')}`))
+        .filter(f => /\.(js|css)$/.test(f));
+    assert.ok(enDisco.length > 20, `se esperaban muchos archivos, hubo ${enDisco.length}`);
+    const faltan = enDisco.filter(f => !listados.has(f));
+    assert.deepEqual(faltan, [], `no estan en PRECACHE de sw.js: ${faltan.join(', ')}`);
+});
+
+test('la version del cache del service worker no volvio a la de antes de estos cambios', () => {
+    // El SW usa cache primero: sin subir CACHE_VERSION, quien ya visito la app NO vuelve a bajar el JS ni
+    // el CSS nuevos, y ve la version vieja para siempre. Estuvo en 'flotacontrol-v2' desde la Fase 7 mientras
+    // el codigo cambiaba. Subir el numero en cada release; este test impide volver atras.
+    const sw = readFileSync(new URL('../sw.js', import.meta.url), 'utf8');
+    const version = Number(/CACHE_VERSION = 'flotacontrol-v(\d+)'/.exec(sw)?.[1]);
+    assert.ok(version >= 3, `CACHE_VERSION esta en v${version}`);
 });

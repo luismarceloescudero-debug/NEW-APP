@@ -312,6 +312,19 @@ export function setPlanillaPrincipal(tipo) {
     return writeTx(['config'], ([store]) => { store.put({ k: PRINCIPAL_KEY, v: tipo || 'carga' }); });
 }
 
+// ---- Alcance elegido (ver js/data/alcance.js) ----
+// Qué decidió el usuario cuando subió resúmenes de un solo tipo de equipo: { firma, modo: 'solo' | 'todos' }.
+// Se guarda contra la firma de ESE conjunto de resúmenes, así no se le vuelve a preguntar lo mismo al
+// reabrir la app, pero sí si sube otros. Usa el store `config`: no cambia el esquema de la base.
+const ALCANCE_KEY = 'alcance_decision';
+export async function getAlcanceDecision() {
+    const r = await readOne('config', ALCANCE_KEY);
+    return (r && r.v) || null;
+}
+export function setAlcanceDecision(decision) {
+    return writeTx(['config'], ([store]) => { store.put({ k: ALCANCE_KEY, v: decision }); });
+}
+
 // ============================ MAPEOS DE COLUMNAS ============================
 
 /**

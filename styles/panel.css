@@ -46,6 +46,8 @@
 .periodo-label { display: block; font-size: 0.78rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
 .periodo-valor { display: block; font-size: 1.05rem; font-weight: 600; color: var(--accent-cyan); margin-top: 0.15rem; }
 .periodo-detalle { font-size: 0.82rem; color: var(--text-muted); text-align: right; }
+/* Recorte activo (ver js/data/alcance.js): tiene que verse, un filtro escondido es peor que ninguno. */
+.periodo-alcance { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 0.5rem; padding: 0.45rem 0.8rem; border: 1px solid var(--accent-cyan); border-radius: 8px; background: rgba(0, 188, 212, 0.08); color: var(--accent-cyan); font-size: 0.84rem; font-weight: 600; }
 
 /* ---------- KPIs ---------- */
 .kpi-grid {
@@ -193,6 +195,18 @@
 .diag-val { display: flex; flex-direction: column; text-align: right; font-weight: 600; color: var(--text-primary); font-size: 0.85rem; }
 .diag-val small { font-weight: 400; color: var(--text-muted); font-size: 0.72rem; }
 
+/* Alineacion de las filas de equipo. La fila es flex con `justify-content: space-between`, asi que el
+   espacio sobrante se reparte segun el ancho del texto de la derecha, que cambia en cada renglon:
+   el nombre del equipo quedaba a una distancia distinta del borde en cada fila. Medido en la misma
+   lista: x = 544, 573, 552, 573, 575 (ralenti) y 240 a 296 (subutilizacion). Con el valor ocupando
+   todo el espacio libre (flex-grow) no queda nada que repartir y el nombre arranca siempre en el
+   mismo x. Se deja `space-between` como esta: las listas de "aceptados" tienen solo nombre + boton
+   y dependen de el para llevar el boton a la derecha. Solo en pantallas anchas: en <=720 px la fila
+   pasa a columna y un flex-basis de 0 se leeria como alto. */
+@media (min-width: 721px) {
+    .diag-lista li > .diag-val { flex: 1 1 0; }
+}
+
 /* El hallazgo "normalizaciones" (diagnostico.js) reutiliza esta fila de equipo para listar
    párrafos completos (qué se corrigió y con qué función), no un valor corto tipo "762 h en
    ralentí". `white-space: nowrap` de la regla de arriba está pensado para eso último — acá,
@@ -228,7 +242,10 @@ li[data-hallazgo="normalizaciones"] .diag-val small {
     display: flex; gap: 0.4rem; padding: 0.5rem 0.7rem; border-bottom: 1px solid var(--border-color);
     background: var(--bg-card);
 }
-.diag-lista-bajo-promedio { max-height: 320px; overflow-y: auto; }
+/* Sin scroll propio: la lista "en la media para abajo" vive DENTRO de la tarjeta, que ya tiene el suyo (el de la
+   pagina). Con `max-height` + `overflow` quedaban dos scrolls anidados y dos listas de equipos en la misma tarjeta,
+   que se leia como "una ventana adentro de otra". La caja es un <details> cerrado por defecto: si se abre, crece. */
+.diag-lista-bajo-promedio { max-height: none; overflow: visible; }
 .diag-lista-bajo-promedio .chk-ralenti-promedio { width: 15px; height: 15px; flex-shrink: 0; margin-right: 0.6rem; }
 
 /* --- Barra de acciones en cada hallazgo --- */

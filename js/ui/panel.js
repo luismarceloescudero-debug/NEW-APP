@@ -4,8 +4,9 @@
  * Todo número mostrado acá registra sus pasos de cálculo (ver calcpopover.js): al hacer
  * click en cualquier KPI o métrica de una tarjeta se abre el detalle de cómo se obtuvo.
  */
-import { getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, editarCampoEquipo, getRalentiEstados, setRalentiEstado, quitarRalentiEstado, crearReclamoGPS, getReclamosGPS, actualizarReclamoGPS, getNoFlotaAceptados, setNoFlotaAceptado, quitarNoFlotaAceptado, getEquiposExcluidos, setEquipoExcluido, quitarEquipoExcluido, updateRawRecord, registrarEdicion, saveCorreccionCarga, huellaCarga, getPrefijosNoFlota, agregarPrefijoNoFlota, quitarPrefijoNoFlota, getSeguimientoEquipos, setSeguimientoEquipo, setSeguimientoRangos, quitarSeguimientoEquipo, getActividadEstimada, setActividadEstimada, quitarActividadEstimada, deleteRawRecord, getAccionesAutomaticas, getReferentesMeta, setReferentesMeta, getPlanillaPrincipal } from '../data/database.js';
+import { getAlcanceDecision, setAlcanceDecision, getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, editarCampoEquipo, getRalentiEstados, setRalentiEstado, quitarRalentiEstado, crearReclamoGPS, getReclamosGPS, actualizarReclamoGPS, getNoFlotaAceptados, setNoFlotaAceptado, quitarNoFlotaAceptado, getEquiposExcluidos, setEquipoExcluido, quitarEquipoExcluido, updateRawRecord, registrarEdicion, saveCorreccionCarga, huellaCarga, getPrefijosNoFlota, agregarPrefijoNoFlota, quitarPrefijoNoFlota, getSeguimientoEquipos, setSeguimientoEquipo, setSeguimientoRangos, quitarSeguimientoEquipo, getActividadEstimada, setActividadEstimada, quitarActividadEstimada, deleteRawRecord, getAccionesAutomaticas, getReferentesMeta, setReferentesMeta, getPlanillaPrincipal } from '../data/database.js';
 import { analizarFlota, periodosDisponibles, periodosAnalisisAutomatico, resumirMovimientosGenericos, registroVacio, mesesDeRegistro } from '../data/analyzer.js';
+import { detectarAlcanceParcial, filtrarPorAlcance } from '../data/alcance.js';
 import { generarDiagnostico, sugerirMeta, evolucionMensual, categoriaRalenti, actividadImplicita, coberturaEquipo, completitudDatos, mesesFueraDeServicio, causaMetaRara, estimacionCreible, NIVELES_COMPLETITUD, coberturaMensual, resolverEquipo, investigarMeta, potenciaEquipo, auditarCalidadCargas, detectarPrefijosNuevos, CLASES_NO_FLOTA, cadenciaCargas, consumoDesdeActividadDeclarada, mediana, utilizacion, metaDesdeConsumoReal, parIdentico } from '../data/diagnostico.js';
 import { TIPO_POR_PREFIJO, MESES, getBandera, tipoLugarCarga, formatFechaAR, normalizeEquipoKey, getDenominacion } from '../data/normalizer.js';
 import { aplicarCorreccionesAutomaticas, deshacerAccionAutomatica } from '../data/autocorreccion.js';
@@ -20,7 +21,9 @@ const view = {
     busqueda: '', denominacion: 'ALL', estado: 'ALL', orden: 'litros',
     provincia: 'ALL', lugarCarga: 'ALL', centroCosto: 'ALL', combustible: 'ALL',
     anioEquipo: 'ALL', potencia: 'ALL', capacidad: 'ALL',
-    anio: '', meses: new Set(), editando: null
+    anio: '', meses: new Set(), editando: null,
+    // Recorte por tipo de equipo elegido en la ventana de alcance (ver js/data/alcance.js), o null = toda la flota.
+    alcance: null, alcanceQuitado: false, alcancePreguntado: ''
 };
 
 /** Interpretación del ralentí según el tipo de equipo (motor de diagnóstico, ver diagnostico.js). */
@@ -207,6 +210,9 @@ function bloqueDosUnidades(m, { compacto = false } = {}) {
  * No son genéricas: cada hallazgo conoce su propio siguiente paso.
  */
 const ACCIONES_PROPUESTAS = {
+    resumen_vs_flota: [
+        { texto: 'Posibles acciones', icono: 'fa-lightbulb', accion: 'consejos' }
+    ],
     sobreconsumo: [
         { texto: 'Comparar los excedidos entre sí', icono: 'fa-code-compare', accion: 'comparar_excedidos' },
         { texto: 'Revisar metas de estos equipos', icono: 'fa-bullseye', accion: 'ajustar_metas_excedidos' }
@@ -333,9 +339,18 @@ export async function renderPanel() {
     kpiEl.innerHTML = '<p style="color:var(--text-muted)">Analizando datos...</p>';
 
     try {
-        const [equipos, rawRecords, estimados, ralentiEstados, noFlotaAceptados, equiposExcluidos, prefijosOficiales, seguimientoEquipos, actividadEstimada, accionesAutomaticas, referentesMeta] = await Promise.all([
+        let [equipos, rawRecords, estimados, ralentiEstados, noFlotaAceptados, equiposExcluidos, prefijosOficiales, seguimientoEquipos, actividadEstimada, accionesAutomaticas, referentesMeta] = await Promise.all([
             getAllEquipos(), getAllRawRecords(), getAllEstimados(), getRalentiEstados(), getNoFlotaAceptados(), getEquiposExcluidos(), getPrefijosNoFlota(), getSeguimientoEquipos(), getActividadEstimada(), getAccionesAutomaticas(), getReferentesMeta()
         ]);
+        // Alcance elegido por el usuario: recorta el universo a un tipo de equipo. Se aplica ACÁ, antes de todo lo
+        // demás, para que KPIs, diagnóstico y tarjetas hablen del mismo universo. `equiposTodos` queda para
+        // detectar si hay algo que preguntar (con el universo ya recortado no se vería el resto de la flota).
+        const equiposTodos = equipos;
+        if (view.alcance) {
+            const recorte = filtrarPorAlcance(equipos, rawRecords, view.alcance);
+            if (recorte.equipos.length) { equipos = recorte.equipos; rawRecords = recorte.rawRecords; }
+            else view.alcance = null;   // un recorte que deja el universo vacío no se aplica
+        }
         datosCrudos = { equipos, rawRecords, estimados };
         ralentiEstadosCache = ralentiEstados;
         noFlotaAceptadosCache = noFlotaAceptados;
@@ -387,11 +402,12 @@ export async function renderPanel() {
         });
         if (aplicado.altas || aplicado.aceptados || aplicado.metas) {
             const [equiposFrescos, noFlotaFrescos, accionesFrescas] = await Promise.all([getAllEquipos(), getNoFlotaAceptados(), getAccionesAutomaticas()]);
-            datosCrudos = { equipos: equiposFrescos, rawRecords, estimados };
+            const equiposVigentes = view.alcance ? filtrarPorAlcance(equiposFrescos, rawRecords, view.alcance).equipos : equiposFrescos;
+            datosCrudos = { equipos: equiposVigentes, rawRecords, estimados };
             noFlotaAceptadosCache = noFlotaFrescos;
             accionesAutomaticasCache = accionesFrescas;
-            ultimoAnalisis = analizarFlota({ equipos: equiposFrescos, rawRecords, estimados, filtro: filtroActivo, principal });
-            fuentes.equipos = equiposFrescos.length;
+            ultimoAnalisis = analizarFlota({ equipos: equiposVigentes, rawRecords, estimados, filtro: filtroActivo, principal });
+            fuentes.equipos = equiposVigentes.length;
         }
 
         // Exponer para que datatable.js pueda abrir el modal de metas sin importar directamente
@@ -421,10 +437,11 @@ window.abrirActividadEstimada = (internos) => abrirActividadEstimada(internos, u
             return;
         }
 
-        renderKPIs(kpiEl, ultimoAnalisis.totales, fuentes);
+        renderKPIs(kpiEl, ultimoAnalisis.totales, fuentes, ultimoAnalisis.comparativas);
         renderDiagnostico(ultimoAnalisis, rawRecords);
         poblarFiltroDenominacion(ultimoAnalisis.filas);
         renderCards(cardsEl, ultimoAnalisis);
+        revisarAlcance(ultimoAnalisis, equiposTodos);
 
         if (!equipos.length) {
             cardsEl.innerHTML = `<div class="empty-state">
@@ -787,7 +804,94 @@ function nivelDetalleMetaEquipo(interno) {
     };
 }
 
-function renderKPIs(el, t, fuentes) {
+/**
+ * Si lo subido cubre UN solo tipo de equipo (p. ej. los resúmenes de viaje de seis camionetas) y solo
+ * algunos meses, la app pregunta en vez de decidir sola: analizar ese recorte, o descartarlo y quedarse
+ * con el período común de toda la flota (meses completos, todos los equipos). Ver js/data/alcance.js.
+ */
+async function revisarAlcance(analisis, equiposTodos) {
+    try {
+        const det = detectarAlcanceParcial(analisis.comparativas || [], equiposTodos);
+        if (!det) return;
+        const guardada = await getAlcanceDecision();
+        if (guardada && guardada.firma === det.firma) {
+            // Ya decidió sobre ESTE conjunto de resúmenes. Si eligió el recorte, se reaplica al reabrir la app.
+            if (guardada.modo === 'solo' && !view.alcance && !view.alcanceQuitado) {
+                view.alcance = { denominacion: det.denominacion };
+                view.meses = new Set(det.meses);
+                view.anio = '';
+                await renderPanel();
+            }
+            return;
+        }
+        if (view.alcancePreguntado === det.firma || document.getElementById('modal-alcance')) return;
+        view.alcancePreguntado = det.firma;
+        abrirAlcanceModal({ ...det, periodoAuto: analisis.totales.periodo_desde ? `${analisis.totales.periodo_desde} → ${analisis.totales.periodo_hasta}` : '' });
+    } catch (e) {
+        console.warn('No se pudo revisar el alcance de la carga:', e);
+    }
+}
+
+async function aplicarAlcance(det, modo) {
+    if (modo === 'solo') {
+        view.alcance = { denominacion: det.denominacion };
+        view.alcanceQuitado = false;
+        view.meses = new Set(det.meses);
+        view.anio = '';
+    } else {
+        view.alcance = null;
+        view.alcanceQuitado = true;
+        view.meses.clear();
+    }
+    await setAlcanceDecision({ firma: det.firma, modo });
+    document.getElementById('modal-alcance')?.remove();
+    await renderPanel();
+}
+
+async function quitarAlcance() {
+    const guardada = await getAlcanceDecision();
+    if (guardada) await setAlcanceDecision({ ...guardada, modo: 'todos' });
+    view.alcance = null;
+    view.alcanceQuitado = true;
+    view.meses.clear();
+    await renderPanel();
+}
+
+function abrirAlcanceModal(det) {
+    const container = document.getElementById('modals-container');
+    if (!container) return;
+    const modalId = 'modal-alcance';
+    document.getElementById(modalId)?.remove();
+    const meses = det.meses.join(', ');
+    const n = det.unidades.length;
+    container.insertAdjacentHTML('beforeend', `
+        <div class="modal-overlay active" id="${modalId}">
+            <div class="modal-content" style="max-width:640px">
+                <div class="modal-header">
+                    <div><h2>¿Qué querés analizar?</h2>
+                    <p class="modal-sub">Subiste ${n} ${n === 1 ? 'resumen' : 'resúmenes'} de viaje, todos de <strong>${esc(det.denominacion)}</strong> y solo de <strong>${esc(meses)}</strong>: no de toda la flota.</p></div>
+                    <button class="btn-close" data-close title="Decidir después"><i class="fa-solid fa-xmark"></i></button>
+                </div>
+                <div class="modal-body" style="display:flex;flex-direction:column;gap:0.75rem">
+                    <button class="btn-primary btn-alcance-solo" style="text-align:left;padding:0.8rem 1rem">
+                        <strong>Solo ${esc(det.denominacion)} · ${esc(meses)}</strong><br>
+                        <span style="font-weight:400;font-size:0.82rem">El panel muestra únicamente los equipos de ese tipo, en ese mes completo. Aparece un aviso visible con el botón "Quitar" para volver.</span>
+                    </button>
+                    <button class="btn-secondary btn-alcance-todos" style="text-align:left;padding:0.8rem 1rem">
+                        <strong>Descartar y usar el período común de toda la flota</strong><br>
+                        <span style="font-weight:400;font-size:0.82rem">Todos los equipos, sin filtro, en los meses completos que tienen todas las planillas${det.periodoAuto ? ` (${esc(det.periodoAuto)})` : ''}. Los resúmenes de viaje quedan solo como comparación.</span>
+                    </button>
+                    <p class="modal-note" style="margin:0">Tu elección queda guardada para estos mismos resúmenes: no se vuelve a preguntar al reabrir la app.</p>
+                </div>
+            </div>
+        </div>`);
+    const modal = document.getElementById(modalId);
+    modal.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', () => modal.remove()));
+    modal.querySelector('.btn-alcance-solo').addEventListener('click', () => aplicarAlcance(det, 'solo'));
+    modal.querySelector('.btn-alcance-todos').addEventListener('click', () => aplicarAlcance(det, 'todos'));
+}
+
+function renderKPIs(el, t, fuentes, comparativas = []) {
     let rango;
     if (t.periodo_desde && t.periodo_hasta) rango = `${t.periodo_desde} → ${t.periodo_hasta}`;
     else if (view.meses.size > 0) rango = rangoCorto();
@@ -808,8 +912,28 @@ function renderKPIs(el, t, fuentes) {
         ? ` · ${dh.dias} día${dh.dias === 1 ? '' : 's'} hábil${dh.dias === 1 ? '' : 'es'} de ${dh.totalCorridos} corridos${dh.completo ? '' : ' (sin feriados móviles confirmados para ese año)'}`
         : '';
 
+    // Los "Resumen de viaje" NO entran al cálculo: son la comparativa del Resumen de Flota (el mismo
+    // reporte de Wara, por unidad) y sumarlos duplicaría km y horas. Sin decirlo, quien los sube espera
+    // que muevan el período y ve que no pasa nada. Se declara cuántos hay y de qué meses.
+    const mesesResumenes = [...new Set((comparativas || []).flatMap(r => mesesDeRegistro(r)))].sort();
+    const resumenesTxt = comparativas && comparativas.length
+        ? ` · ${comparativas.length} ${comparativas.length === 1 ? 'resumen' : 'resúmenes'} de viaje (${esc(mesesResumenes.join(', '))}) solo para comparar: no cambian el período`
+        : '';
+
+    const alcanceHTML = view.alcance
+        ? `<div class="periodo-alcance" role="status">
+                <span><i class="fa-solid fa-filter"></i> Alcance: solo ${esc(view.alcance.denominacion)}${view.meses.size ? ' · ' + esc([...view.meses].sort().join(', ')) : ''} — no es toda la flota</span>
+                <button type="button" id="btn-quitar-alcance" class="btn-xs" title="Volver a todos los equipos y al período común de todas las planillas">Quitar</button>
+           </div>`
+        : '';
+    if (!el.dataset.alcanceBound) {
+        el.dataset.alcanceBound = '1';
+        el.addEventListener('click', (ev) => { if (ev.target.closest('#btn-quitar-alcance')) quitarAlcance(); });
+    }
+
     el.innerHTML = `
         ${fuentesHTML(fuentes)}
+        ${alcanceHTML}
 
         <div class="periodo-bar" ${periodoAttrs} role="button" tabindex="0">
             <div class="periodo-info">
@@ -817,7 +941,7 @@ function renderKPIs(el, t, fuentes) {
                 <span class="periodo-valor">${esc(rango)}</span>
             </div>
             <div class="periodo-detalle">
-                ${nf(t.cantidad_cargas)} cargas · ${nf(t.cantidad_gps)} GPS${t.cantidad_otros ? ` · ${nf(t.cantidad_otros)} otros` : ''} · ${t.equipos_con_datos}/${t.equipos} equipos con actividad${dhTxt}
+                ${nf(t.cantidad_cargas)} cargas · ${nf(t.cantidad_gps)} GPS${t.cantidad_otros ? ` · ${nf(t.cantidad_otros)} otros` : ''} · ${t.equipos_con_datos}/${t.equipos} equipos con actividad${dhTxt}${resumenesTxt}
                 <span class="kpi-calc"><i class="fa-solid fa-calculator"></i> ver cálculo</span>
             </div>
         </div>
@@ -1057,6 +1181,13 @@ function renderDiagnostico(analisis, rawRecords = []) {
                             <button class="btn-xs btn-ralenti-aceptable" data-interno="${esc(e.interno)}" title="Investigado: el ralentí de este equipo es normal. Sale de este hallazgo de ahora en más">
                                 <i class="fa-solid fa-check"></i> Investigar y marcar aceptable
                             </button>` : ''}
+                            ${h.id === 'resumen_vs_flota' && e.cambio ? `
+                            <button class="btn-xs btn-resumen-reclamo" data-interno="${esc(e.interno)}" data-detalle="${esc(e.texto)}" title="Reclamar a quien provee el GPS: el resumen de viaje y el mensual informan distinto. El motivo ya lleva la diferencia.">
+                                <i class="fa-solid fa-satellite-dish"></i> Reclamar GPS
+                            </button>
+                            <button class="btn-xs btn-resumen-seguir" data-interno="${esc(e.interno)}" data-detalle="${esc(e.texto)}" title="Deja anotada la duda en el equipo (queda guardada) con las posibles acciones">
+                                <i class="fa-solid fa-flag"></i> Marcar para seguimiento
+                            </button>` : ''}
                             ${puedeReclamarGPS ? `
                             <button class="btn-xs btn-ralenti-reclamo" data-interno="${esc(e.interno)}" data-hallazgo="${esc(h.id)}" title="Investigado: los datos no cierran. Generar un reclamo interno para pedir revisión del equipo GPS">
                                 <i class="fa-solid fa-satellite-dish"></i> Investigar y reclamar GPS
@@ -1115,7 +1246,7 @@ function renderDiagnostico(analisis, rawRecords = []) {
     // --- Event listeners ---
     el.querySelectorAll('.diag-lista li[data-interno]').forEach(li => {
         li.addEventListener('click', (e) => {
-            if (e.target.closest('.btn-diag-seguir, .btn-ver-cargas, .btn-ver-mes-cargas, .btn-ralenti-aceptable, .btn-ralenti-reclamo, .chk-ralenti-promedio, .btn-nofl-valido, .btn-estado-equipo, .btn-deshacer-auto')) return;
+            if (e.target.closest('.btn-diag-seguir, .btn-ver-cargas, .btn-ver-mes-cargas, .btn-ralenti-aceptable, .btn-ralenti-reclamo, .btn-resumen-reclamo, .btn-resumen-seguir, .chk-ralenti-promedio, .btn-nofl-valido, .btn-estado-equipo, .btn-deshacer-auto')) return;
             const hallazgoId = li.dataset.hallazgo || '';
             if (hallazgoId.startsWith('nofl_')) {
                 // Para hallazgos nofl_*, navegar a tabla de cargas y buscar el valor
@@ -1377,6 +1508,22 @@ function renderDiagnostico(analisis, rawRecords = []) {
         });
     });
 
+    // Resumen de viaje que no coincide con el mensual: reclamar al proveedor del GPS o dejar la duda
+    // anotada en el equipo. Los dos llevan escrita la diferencia y las posibles acciones, para que quien
+    // lo abra no tenga que reconstruir qué pasó.
+    el.querySelectorAll('.btn-resumen-reclamo').forEach(b => {
+        b.addEventListener('click', (e) => {
+            e.stopPropagation();
+            abrirNuevoReclamoModal([b.dataset.interno], motivoDiscrepanciaResumen(b.dataset.interno, b.dataset.detalle), analisis, rawRecords, 'resumen_vs_flota');
+        });
+    });
+    el.querySelectorAll('.btn-resumen-seguir').forEach(b => {
+        b.addEventListener('click', (e) => {
+            e.stopPropagation();
+            abrirEstadoEquipo(b.dataset.interno, { categoria: 'otro', motivo: motivoDiscrepanciaResumen(b.dataset.interno, b.dataset.detalle) });
+        });
+    });
+
     // Ralentí: "Reclamo GPS (selección)" — mismo reclamo, pero para todos los equipos tildados
     // de la tarjeta a la vez (los del checklist "en la media" y/o los que se hayan tildado a
     // mano en la lista de peores), en vez de reclamar uno por uno.
@@ -1530,6 +1677,15 @@ function mailtoReclamoLote(reclamos) {
 /** Motivo sugerido para el reclamo de GPS, según de qué hallazgo salió — cada uno describe un
  * problema real distinto (ralentí alto o cero actividad reportada) y el
  * texto queda editable antes de guardar, así que esto es solo un punto de partida razonable. */
+/** Texto para reclamar o anotar un Resumen de viaje que no coincide con el Resumen de Flota. */
+function motivoDiscrepanciaResumen(interno, detalle) {
+    return `${interno}: el Resumen de viaje no coincide con el Resumen de Flota mensual (${detalle}). ` +
+        'Posibles acciones: 1) regenerar el resumen de viaje con el mes completo y volver a subirlo; ' +
+        '2) confirmar que el reporte es de esta misma unidad (interno y patente); ' +
+        '3) comparar contra el mensual y las cargas de combustible para saber cuál es el correcto; ' +
+        '4) si siguen sin coincidir, reclamar la revisión del reporte al proveedor del GPS.';
+}
+
 function motivoReclamoGPS(hallazgoId) {
     if (hallazgoId === 'ralenti_inverosimil') return 'Ralentí inverosímil (posible error de datos o sensor del GPS)';
     if (hallazgoId === 'sin_medicion') return 'El equipo carga combustible pero el GPS no reporta ni un km ni una hora en todo el período: pedimos verificación de que el equipo esté transmitiendo.';
@@ -1779,6 +1935,21 @@ function abrirNoFlotaAceptados(analisis, rawRecords) {
  * los mismos equipos reaparecen en el diagnóstico todos los meses.
  */
 const CONSEJOS = {
+    resumen_vs_flota: {
+        titulo: 'El Resumen de viaje no coincide con el Resumen de Flota',
+        intro: 'El "Resumen de viaje" y el "Resumen de Flota" son el mismo reporte de Wara (uno por unidad, otro mensual de toda la flota). Si informan distinto para el mismo mes, alguno de los dos está mal, y <strong>el resumen de viaje no entra al cálculo</strong>: lo que se analiza es el mensual. Por eso conviene dirimir cuál es el correcto antes de confiar en los km y horas de esa unidad.',
+        pasos: [
+            ['Revisar el período del resumen de viaje', 'La causa más frecuente: se generó con un rango parcial (por ejemplo unos pocos días) en vez del mes completo. Volvé a generarlo del día 1 al último día del mes y subilo de nuevo.'],
+            ['Confirmar que es la misma unidad', 'Mirá que el interno y la patente del reporte sean los de la unidad que figura acá. Un reporte de otra unidad con el mismo nombre da una diferencia enorme.'],
+            ['Comparar contra el Resumen de Flota', 'Abrí los registros GPS de la unidad y mirá qué informa el mensual para ese mes. Si el mensual es coherente con las cargas de combustible, es el que vale.'],
+            ['Reclamar a quien provee el GPS', 'Si los dos reportes salen del mismo sistema y siguen sin coincidir, es un problema del proveedor: usá "Reclamar GPS" en la fila con la diferencia ya escrita.'],
+            ['Dejarlo en seguimiento', 'Mientras se resuelve, "Marcar para seguimiento" deja anotada la duda en el equipo, y queda guardada aunque cierres la app.']
+        ],
+        prevenir: [
+            'Generar siempre el resumen de viaje con el mes completo, no con un rango parcial.',
+            'Si el Resumen de Flota mensual ya trae la unidad, el resumen de viaje es solo una comprobación: no hace falta subirlo salvo que se quiera verificar un dato puntual.'
+        ]
+    },
     metas: {
         titulo: 'Metas que no cierran contra el consumo real',
         intro: 'Que el real difiera mucho de la meta tiene cuatro explicaciones posibles, y cada una se arregla distinto. Antes de pisar la meta, mirá la etiqueta de causa probable que aparece al lado de cada equipo en la lista.',
@@ -3802,12 +3973,20 @@ function abrirElegirReferentes(interno, analisis) {
  * reabre esta ventana con el hallazgo recalculado, para poder encadenar decisiones sobre el
  * mismo grupo sin rearmar la selección.
  */
-function abrirRevisarDecidir(hallazgoId, analisis, rawRecords) {
+function abrirRevisarDecidir(hallazgoId, analisis, rawRecords, { trasAccion = false } = {}) {
     const container = document.getElementById('modals-container');
     if (!container) return;
     const h = generarDiagnostico(analisis.filas, analisis.totales, rawRecords, ralentiEstadosCache,
         noFlotaAceptadosCache, equiposExcluidosCache, extraDiag()).find(x => x.id === hallazgoId);
-    if (!h) { alert('Ese hallazgo ya no está: los datos cambiaron y se recalculó el diagnóstico.'); return; }
+    if (!h) {
+        // Cuando el hallazgo desaparece TRAS una acción de esta misma ventana (se aceptaron o resolvieron
+        // todos los equipos que quedaban), no es un dato que cambió por su cuenta: es el resultado buscado.
+        // Antes se avisaba igual con "los datos cambiaron", y un éxito se leía como un error. El panel ya
+        // quedó recalculado (la tarjeta no está y los totales bajaron), así que no hace falta decir nada.
+        // Si el usuario lo abrió a mano y no existe, el aviso sí corresponde.
+        if (!trasAccion) alert('Ese hallazgo ya no está: los datos cambiaron y se recalculó el diagnóstico.');
+        return;
+    }
 
     // `h.equipos` viene recortado para la tarjeta (10-15 filas); `internos_todos` trae el grupo
     // completo. Para decidir en bloque hace falta el grupo entero — si no, un hallazgo de 40
@@ -3932,7 +4111,7 @@ function abrirRevisarDecidir(hallazgoId, analisis, rawRecords) {
 
     // Al volver de una acción se reabre esta ventana: encadenar decisiones sobre el mismo grupo
     // es el caso normal, y obligar a reabrirla a mano es justamente lo que se vino a resolver.
-    const reabrir = async () => { await renderPanel(); abrirRevisarDecidir(hallazgoId, ultimoAnalisis, rawRecords); };
+    const reabrir = async () => { await renderPanel(); abrirRevisarDecidir(hallazgoId, ultimoAnalisis, rawRecords, { trasAccion: true }); };
 
     modal.querySelectorAll('.btn-rev-accion').forEach(b => {
         b.addEventListener('click', async () => {
@@ -4196,7 +4375,7 @@ function abrirEstadoEquipoBulk(internos, hallazgoId = '') {
  * actividad, estimación no creíble): es la manera de "investigar y dejar constancia" en un
  * solo lugar, en vez de tener un botón distinto por cada tipo de problema.
  */
-function abrirEstadoEquipo(interno) {
+function abrirEstadoEquipo(interno, prefill = {}) {
     const container = document.getElementById('modals-container');
     if (!container) return;
     const actual = seguimientoEquiposCache.get(interno);
@@ -4244,10 +4423,10 @@ function abrirEstadoEquipo(interno) {
                     <label class="correc-field-label" style="display:block;text-align:left;margin-bottom:0.3rem">Categoría general</label>
                     <select class="estado-eq-categoria" style="width:100%;margin-bottom:0.75rem">
                         <option value="">— Sin anotar —</option>
-                        ${CATEGORIAS_SEGUIMIENTO.map(c => `<option value="${c.id}" ${actual?.categoria === c.id ? 'selected' : ''}>${esc(c.label)}</option>`).join('')}
+                        ${CATEGORIAS_SEGUIMIENTO.map(c => `<option value="${c.id}" ${(actual?.categoria || prefill.categoria) === c.id ? 'selected' : ''}>${esc(c.label)}</option>`).join('')}
                     </select>
                     <label class="correc-field-label" style="display:block;text-align:left;margin-bottom:0.3rem">Detalle (opcional)</label>
-                    <textarea class="estado-eq-motivo" rows="2" placeholder="Ej: en taller marzo-abril, cambio de sucursal a San Juan en mayo...">${esc(actual?.motivo || '')}</textarea>
+                    <textarea class="estado-eq-motivo" rows="${prefill.motivo && !actual?.motivo ? 6 : 2}" placeholder="Ej: en taller marzo-abril, cambio de sucursal a San Juan en mayo...">${esc(actual?.motivo || prefill.motivo || '')}</textarea>
 
                     <div style="margin-top:1.2rem;border-top:1px solid var(--border-color);padding-top:1rem">
                         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem">

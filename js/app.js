@@ -26,10 +26,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         alert('Error crítico: no se pudo inicializar la base de datos local del navegador.');
     }
 
-    // Los movimientos (cargas, GPS, cubiertas…) son datos de sesión: se limpian al iniciar.
-    // Solo el maestro (equipos + estimados + mapeos + config) persiste entre sesiones, porque
-    // tiene ediciones manuales y columnas propias que no se deben perder.
-    try { await clearMovimientos(); } catch (e) { console.warn('No se pudieron limpiar los movimientos al iniciar:', e); }
+    // Los movimientos (cargas, GPS, cubiertas…) PERSISTEN entre sesiones, igual que el maestro: recargar
+    // la página ya no los vacía. Antes se borraban acá en cada inicio, lo que contradecía el aviso de
+    // privacidad ("si cerrás la página, los datos siguen en esta computadora") y hacía perder todo el
+    // análisis con solo recargar. Para vaciarlos hay un botón dedicado: "Re-analizar" (reanalizar()).
 
     setupNavigation();
     initUploadUI();

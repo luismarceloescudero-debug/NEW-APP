@@ -143,8 +143,22 @@ export async function aplicarCorreccionesAutomaticas({ equipos = [], huerfanos =
             });
             resultado.aceptados++;
         }
-        // clas.tipo === 'dominio': patente real sin interno en el padrón — se necesita saber a
-        // mano de qué equipo se trata. Queda para revisión manual, sin tocar.
+        else if (clas.tipo === 'dominio' && !deshechas.has(`aceptado_no_flota|${h.interno}`)) {
+            // Patente sin interno: no es un error mientras el gasto esté imputado a un centro de costo
+            // (decisión cerrada del proyecto). Sin centro de costo en alguna carga sí queda para revisar.
+            const suyas = rawRecords.filter(r => r.type === 'carga' && (r.interno_key === normalizeEquipoKey(h.interno) || (h.dominio && r.dominio_key === normalizeEquipoKey(h.dominio))));
+            const centros = [...new Set(suyas.map(r => r.centro_costo).filter(Boolean))];
+            if (suyas.length && suyas.every(r => r.centro_costo)) {
+                await setNoFlotaAceptado(h.interno, `Patente sin interno con centro de costo (${centros.join(', ')}): el gasto está imputado.`);
+                await registrarAccionAutomatica({
+                    tipo: 'aceptado_no_flota', codigo: h.interno,
+                    motivo: `Patente sin interno, con el gasto imputado al centro de costo ${centros.join(', ')}.`,
+                    detalle: `${h.cargas} carga${h.cargas === 1 ? '' : 's'} · ${h.litros.toFixed(1)} L`
+                });
+                resultado.aceptados++;
+            }
+            // Si alguna carga no trae centro de costo, no hay a dónde imputar el gasto: revisión manual.
+        }
     }
 
     // Un interno con dos patentes en Cargas: se unifica en la que declara el maestro o en la

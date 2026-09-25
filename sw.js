@@ -13,7 +13,7 @@
  * vieja en caché bajen la nueva la próxima vez que abran la app con internet (`activate`
  * borra los caches de versiones anteriores).
  */
-const CACHE_VERSION = 'flotacontrol-v4';
+const CACHE_VERSION = 'flotacontrol-v5';
 
 const PRECACHE = [
     './',
@@ -109,13 +109,14 @@ self.addEventListener('fetch', (event) => {
         return;
     }
 
-    // Todo lo demás (JS, CSS, fuentes, íconos): caché primero, red como respaldo.
+    // Todo lo demás (JS, CSS, fuentes, íconos): RED primero (revalidando con el servidor), caché
+    // como respaldo sin conexión. Antes era caché primero, y quien ya había visitado la app seguía
+    // viendo el JS y el CSS viejos después de un deploy hasta que el service worker nuevo se
+    // activaba: los arreglos "no llegaban". Con red primero un deploy se ve en la siguiente carga,
+    // y sin internet la app abre igual desde el caché.
     event.respondWith(
-        caches.match(request).then((cacheada) => {
-            if (cacheada) return cacheada;
-            return fetch(request)
-                .then((resp) => cachearSiFalta(request, resp))
-                .catch(() => cacheada); // undefined si tampoco estaba cacheada: el navegador reporta el error normal
-        })
+        fetch(request, { cache: 'no-cache' })
+            .then((resp) => cachearSiFalta(request, resp))
+            .catch(() => caches.match(request))
     );
 });

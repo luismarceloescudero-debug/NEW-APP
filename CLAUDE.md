@@ -445,6 +445,12 @@ confirmadas contra el comprobante por HSV y se aplican directo:
   → GE01 (ARIDOS / AMZA).
 - **Servicio de planta escrito con su nombre**: LIMPIEZA en Godoy Cruz → LM01, CALDERA en Tunuyán →
   CA01 (`SERVICIO_POR_SEDE`). Hoy los datos ya traen el código, así que no dispara.
+- **Patente sin interno con centro de costo**: se acepta sola (`aceptado_no_flota`, revertible) si
+  TODAS sus cargas traen centro de costo, porque el gasto está imputado (decisión cerrada). Medido:
+  AH685WR, AG546OW, AC080QM, AG426HO y AG629TJ (PMZA/VMZA/GMZA). Sin centro de costo en alguna
+  carga sigue para revisión manual. El KPI "Equipos" ya no dice "N códigos sin padrón": dice
+  "por identificar" (con actividad y sin resolver) y "ya resueltos"; hoy 2 (PORTATIL y CF40, unidades
+  del GPS sin equipo) y 5.
 - **Un interno con dos patentes**: gana la del maestro; si no, la que duplica a la otra. Medido:
   MX59 → ONK194 (23 filas), BM14 → GNG059 (6).
 
@@ -581,7 +587,11 @@ vuelve a ser verdad. Verificado: 12.792 registros en la base después de recarga
 totales (678.429,5 L / 1.278.888,9 km). Para vaciar hay un botón dedicado, "Vaciar datos" (antes
 "Re-analizar", un nombre que no decía que borraba).
 
-**El Service Worker sirve JS y CSS primero desde caché: hay que subir `CACHE_VERSION` en cada
+**El Service Worker pide JS y CSS primero a la RED (desde el 25/09/2026) y usa el caché solo sin
+conexión.** Antes era caché primero y quien ya había visitado la app veía el JS/CSS viejo después de
+un deploy (fue exactamente lo que pasó con capturas de la app "desalineada" cuando el arreglo ya
+estaba desplegado). Con un SW viejo instalado hacen falta DOS recargas para pasar al nuevo; de ahí en
+más un deploy se ve en la siguiente carga. **Historia previa, ya no vale tal cual:** era caché primero y hay que subir `CACHE_VERSION` en cada
 release.** Estuvo en `flotacontrol-v2` desde la Fase 7 mientras el código seguía cambiando, así que
 quien ya había visitado la app **no volvía a bajar los archivos nuevos**: ninguno de los arreglos
 posteriores le llegaba. Dos tests lo protegen (`tests/configuracion.test.mjs`): que la versión no

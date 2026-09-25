@@ -7,7 +7,7 @@
 import { getAlcanceDecision, setAlcanceDecision, getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, editarCampoEquipo, getRalentiEstados, setRalentiEstado, quitarRalentiEstado, crearReclamoGPS, getReclamosGPS, actualizarReclamoGPS, getNoFlotaAceptados, setNoFlotaAceptado, quitarNoFlotaAceptado, getEquiposExcluidos, setEquipoExcluido, quitarEquipoExcluido, updateRawRecord, registrarEdicion, saveCorreccionCarga, huellaCarga, getPrefijosNoFlota, agregarPrefijoNoFlota, quitarPrefijoNoFlota, getSeguimientoEquipos, setSeguimientoEquipo, setSeguimientoRangos, quitarSeguimientoEquipo, getActividadEstimada, setActividadEstimada, quitarActividadEstimada, deleteRawRecord, getAccionesAutomaticas, getReferentesMeta, setReferentesMeta, getPlanillaPrincipal } from '../data/database.js';
 import { analizarFlota, periodosDisponibles, periodosAnalisisAutomatico, resumirMovimientosGenericos, registroVacio, mesesDeRegistro } from '../data/analyzer.js';
 import { detectarAlcanceParcial, filtrarPorAlcance } from '../data/alcance.js';
-import { generarDiagnostico, sugerirMeta, evolucionMensual, categoriaRalenti, actividadImplicita, coberturaEquipo, completitudDatos, mesesFueraDeServicio, causaMetaRara, estimacionCreible, NIVELES_COMPLETITUD, coberturaMensual, resolverEquipo, investigarMeta, potenciaEquipo, auditarCalidadCargas, detectarPrefijosNuevos, CLASES_NO_FLOTA, cadenciaCargas, consumoDesdeActividadDeclarada, mediana, utilizacion, metaDesdeConsumoReal, parIdentico } from '../data/diagnostico.js';
+import { generarDiagnostico, sugerirMeta, evolucionMensual, categoriaRalenti, actividadImplicita, coberturaEquipo, completitudDatos, mesesFueraDeServicio, causaMetaRara, estimacionCreible, NIVELES_COMPLETITUD, coberturaMensual, resolverEquipo, investigarMeta, potenciaEquipo, auditarCalidadCargas, detectarPrefijosNuevos, CLASES_NO_FLOTA, cadenciaCargas, consumoDesdeActividadDeclarada, mediana, utilizacion, metaDesdeConsumoReal, parIdentico, huerfanoAporta } from '../data/diagnostico.js';
 import { TIPO_POR_PREFIJO, MESES, getBandera, tipoLugarCarga, formatFechaAR, normalizeEquipoKey, getDenominacion } from '../data/normalizer.js';
 import { aplicarCorreccionesAutomaticas, deshacerAccionAutomatica, corregirAManoIdentidad } from '../data/autocorreccion.js';
 import { diasHabiles, esDiaHabil, esFeriado } from '../data/feriados.js';
@@ -896,6 +896,20 @@ function abrirAlcanceModal(det) {
     modal.querySelector('.btn-alcance-todos').addEventListener('click', () => aplicarAlcance(det, 'todos'));
 }
 
+// Códigos de las cargas que no figuran en el maestro Y todavía nadie resolvió. Los ya aceptados
+// (patente sin interno con centro de costo, servicio de planta) siguen sumando a los totales como
+// "sin asignar" —es gasto real—, pero dejan de figurar como algo por hacer.
+function pendientesDeIdentificar(t) {
+    const aceptados = new Set(noFlotaAceptadosCache.map(r => normalizeEquipoKey(r.codigo)));
+    // Un código sin litros, km ni horas (un nombre de cliente que solo aparece en Loop) no aporta nada que resolver.
+    return (t.huerfanos || []).filter(h => huerfanoAporta(h) && !aceptados.has(normalizeEquipoKey(h.interno)));
+}
+function subCodigosSinEquipo(t) {
+    const pend = pendientesDeIdentificar(t).length;
+    const resueltos = (t.huerfanos || []).filter(h => huerfanoAporta(h)).length - pend;
+    return `${t.equipos_con_datos} con actividad · ${pend} por identificar` + (resueltos ? ` · ${resueltos} ya resuelto${resueltos === 1 ? '' : 's'}` : '');
+}
+
 function renderKPIs(el, t, fuentes, comparativas = []) {
     let rango;
     if (t.periodo_desde && t.periodo_hasta) rango = `${t.periodo_desde} → ${t.periodo_hasta}`;
@@ -980,10 +994,10 @@ function renderKPIs(el, t, fuentes, comparativas = []) {
                     ] : []),
                     { texto: 'Ajustar metas', icono: 'fa-sliders', primaria: t.sobre_meta === 0, onClick: () => abrirAjusteMetas(ultimoAnalisis, t.sobre_meta > 0 ? 'excedidos' : 'todos') }
                 ] })}
-            ${kpi({ id: 'kpi-equipos', label: 'Equipos', valor: String(t.equipos), sub: `${t.equipos_con_datos} con actividad · ${t.huerfanos.length} códigos sin padrón`, clase: t.huerfanos.length ? 'kpi-warn' : '', titulo: 'Equipos del maestro', pasos: t.pasos.equipos,
+            ${kpi({ id: 'kpi-equipos', label: 'Equipos', valor: String(t.equipos), sub: subCodigosSinEquipo(t), clase: pendientesDeIdentificar(t).length ? 'kpi-warn' : '', titulo: 'Equipos del maestro', pasos: t.pasos.equipos,
                 acciones: [
                     { texto: 'Ver maestro de equipos', icono: 'fa-table-list', primaria: true, onClick: () => window.abrirTablaConBusqueda?.('maestro', '') },
-                    ...(t.huerfanos.length ? [{ texto: `Ver ${t.huerfanos.length} código${t.huerfanos.length === 1 ? '' : 's'} sin padrón`, icono: 'fa-triangle-exclamation', onClick: () => window.abrirTablaConBusqueda?.('carga', (t.huerfanos[0]?.interno || t.huerfanos[0]?.dominio || '')) }] : [])
+                    ...(pendientesDeIdentificar(t).length ? [{ texto: `Ver ${pendientesDeIdentificar(t).length} código${pendientesDeIdentificar(t).length === 1 ? '' : 's'} por identificar`, icono: 'fa-triangle-exclamation', onClick: () => window.abrirTablaConBusqueda?.('carga', (pendientesDeIdentificar(t)[0]?.interno || pendientesDeIdentificar(t)[0]?.dominio || '')) }] : [])
                 ] })}
         </div>`;
 }
@@ -1170,14 +1184,14 @@ function renderDiagnostico(analisis, rawRecords = []) {
                             <button class="btn-xs btn-nofl-valido" data-codigo="${esc(e.interno)}" title="Marcar que este código está bien así (ej. un vehículo de préstamo/demo sin interno propio): sale de este hallazgo de ahora en más">
                                 <i class="fa-solid fa-check"></i> Así está bien
                             </button>` : ''}
-                            ${esAccionAuto ? `
+                            ${esAccionAuto ? `<span class="diag-acciones-fila">
                             <button class="btn-xs btn-deshacer-auto" data-id="${esc(e.accion_id)}" title="Revertir esta corrección automática. No vuelve a aplicarse sola.">
                                 <i class="fa-solid fa-rotate-left"></i> Deshacer
                             </button>
                             ${['corregido_tipeo', 'corregido_servicio', 'patente_unificada'].includes(e.accion_tipo) ? `
                             <button class="btn-xs btn-corregir-identidad" data-id="${esc(e.accion_id)}" title="Ingresar a mano el dato correcto. Reemplaza la corrección automática y también se puede deshacer.">
                                 <i class="fa-solid fa-pen"></i> Corregir a mano
-                            </button>` : ''}` : ''}
+                            </button>` : ''}</span>` : ''}
                             ${e.corregir_patente ? `
                             <button class="btn-xs btn-corregir-identidad" data-interno="${esc(e.interno)}" data-campo="patente" title="Ingresar la patente correcta de este interno. Se puede deshacer.">
                                 <i class="fa-solid fa-pen"></i> Corregir patente

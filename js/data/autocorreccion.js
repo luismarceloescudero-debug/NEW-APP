@@ -288,3 +288,49 @@ export async function deshacerAccionAutomatica(accion) {
     await marcarAccionDeshecha(id);
     return { revertido, motivo };
 }
+
+/**
+ * Corrección a mano de una identidad: la persona ingresa el dato correcto cuando la automática
+ * no alcanzó (patente doble sin mayoría clara) o se equivocó. Si viene de una acción automática,
+ * primero se la deshace —el registro vuelve a lo que traía la planilla y queda marcada para que
+ * no se reaplique sola— y recién después se aplica lo ingresado, con la misma reversibilidad.
+ *
+ * @param {Object} p
+ * @param {Object|null} p.accion   acción automática a reemplazar (o null si no había ninguna)
+ * @param {'interno'|'patente'} p.campo  qué se corrige
+ * @param {string} p.codigo        el código de origen (el mal escrito) o el interno con dos patentes
+ * @param {string} p.valor         el dato correcto
+ * @returns {{ok: boolean, motivo: string}}
+ */
+export async function corregirAManoIdentidad({ accion = null, campo, codigo, valor }) {
+    const limpio = String(valor || '').trim().toUpperCase();
+    if (!limpio) return { ok: false, motivo: 'No se ingresó ningún valor.' };
+    if (accion) await deshacerAccionAutomatica(accion);
+    const clave = normalizeEquipoKey(codigo);
+    const registros = await getAllRawRecords();
+
+    if (campo === 'interno') {
+        const propios = registros.filter(r => r.interno_key === clave);
+        if (!propios.length) return { ok: false, motivo: `No hay registros con el código "${codigo}".` };
+        await updateRawRecords(reasignar(propios, limpio));
+        await registrarAccionAutomatica({
+            tipo: 'corregido_tipeo', codigo,
+            motivo: `Corregido a mano: "${codigo}" es ${limpio}.`,
+            detalle: `${propios.length} registro${propios.length === 1 ? '' : 's'} → ${limpio}`
+        });
+        return { ok: true, motivo: `${propios.length} registros pasaron a ${limpio}.` };
+    }
+
+    const aCambiar = registros.filter(r => r.type === 'carga' && r.interno_key === clave && r.dominio && r.dominio !== limpio);
+    if (!aCambiar.length) return { ok: false, motivo: `Ninguna carga de ${codigo} tiene una patente distinta de ${limpio}.` };
+    await updateRawRecords(aCambiar.map(r => ({
+        id: r.id,
+        cambios: { dominio: limpio, dominio_key: normalizeEquipoKey(limpio), _dominio_original: { dominio: r.dominio, dominio_key: r.dominio_key } }
+    })));
+    await registrarAccionAutomatica({
+        tipo: 'patente_unificada', codigo,
+        motivo: `Corregido a mano: la patente de ${codigo} es ${limpio}.`,
+        detalle: `${aCambiar.length} fila${aCambiar.length === 1 ? '' : 's'} corregida${aCambiar.length === 1 ? '' : 's'}`
+    });
+    return { ok: true, motivo: `${aCambiar.length} filas pasaron a la patente ${limpio}.` };
+}

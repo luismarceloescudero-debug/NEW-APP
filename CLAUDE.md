@@ -119,7 +119,7 @@ Correrlo **antes de commitear** cualquier cosa en `js/data/` o `js/parsers/`. Lo
 | `npm run auditar` | ¿Cada número se puede re-derivar de su propia definición? | minutos |
 
 **`npm test` — la suite de unit tests (`tests/*.test.mjs`, node:test, sin dependencias).**
-273 casos sobre las funciones puras de `js/data/` y `js/parsers/`. No reemplaza a ningún arnés
+290 casos sobre las funciones puras de `js/data/` y `js/parsers/`. No reemplaza a ningún arnés
 y ninguno lo reemplaza a él: los arneses corren el pipeline entero sobre los Excel reales y
 contestan *"¿el total cambió?"*; los tests fijan el **contrato de cada función por separado** y
 contestan *"¿esta pieza sigue haciendo lo que dice que hace?"* — sin planillas, en segundos, y
@@ -447,6 +447,15 @@ confirmadas contra el comprobante por HSV y se aplican directo:
   CA01 (`SERVICIO_POR_SEDE`). Hoy los datos ya traen el código, así que no dispara.
 - **Un interno con dos patentes**: gana la del maestro; si no, la que duplica a la otra. Medido:
   MX59 → ONK194 (23 filas), BM14 → GNG059 (6).
+
+**Corregir a mano** (`corregirAManoIdentidad()`): botón "Corregir a mano" en cada corrección
+automática de código o patente, "Corregir patente" en el hallazgo de patente doble y en su modal
+"Revisar y decidir" (que para ese hallazgo ofrece solo esa acción y "Marcar como revisado", no las
+13 de ralentí/metas/GPS). La persona ingresa el dato; si venía de una acción automática, esta se
+deshace primero y queda marcada para no reaplicarse. Lo manual también se puede deshacer. Las
+acciones ya deshechas **no se listan** como "aplicadas solas". Trampa encontrada al probarlo:
+`reabrir()` del modal usaba la copia de registros de cuando se abrió, así que tras corregir volvía
+a listar el hallazgo ya resuelto; ahora relee de `datosCrudos`.
 
 El hallazgo "N equipos del maestro no figuran en Cargas" se **quitó a propósito**: un equipo sin
 cargas no se analiza y no es un error (`totales.universo.fuera_principal` sigue existiendo).

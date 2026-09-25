@@ -1612,7 +1612,7 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
     const codigosQueAportan = new Set((totales.huerfanos || []).filter(huerfanoAporta)
         .map(h => normalizeEquipoKey(h.interno)));
     const accionesRecientes = (extra.accionesRecientes || []).filter(a =>
-        !a.revisado && a.tipo !== 'alta_interno' &&
+        !a.revisado && !a.deshecha && a.tipo !== 'alta_interno' &&
         !(a.tipo === 'aceptado_no_flota' && !codigosQueAportan.has(normalizeEquipoKey(a.codigo))));
     if (accionesRecientes.length) {
         const porTipo = { alta_interno: [], aceptado_no_flota: [], meta_alineada: [], corregido_tipeo: [], corregido_servicio: [], patente_unificada: [] };
@@ -2210,7 +2210,8 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
             equipos: multiDominio.map(x => ({
                 interno: x.interno, denominacion: '',
                 texto: [...x.dominios.entries()].sort((a, b) => b[1] - a[1]).map(([d, n]) => `${d} (${n})`).join(' · '),
-                sub: 'patente (cantidad de filas con esa patente)'
+                sub: 'patente (cantidad de filas con esa patente)',
+                corregir_patente: true
             }))
         });
     }

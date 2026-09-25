@@ -9,7 +9,7 @@ import { analizarFlota, periodosDisponibles, periodosAnalisisAutomatico, resumir
 import { detectarAlcanceParcial, filtrarPorAlcance } from '../data/alcance.js';
 import { generarDiagnostico, sugerirMeta, evolucionMensual, categoriaRalenti, actividadImplicita, coberturaEquipo, completitudDatos, mesesFueraDeServicio, causaMetaRara, estimacionCreible, NIVELES_COMPLETITUD, coberturaMensual, resolverEquipo, investigarMeta, potenciaEquipo, auditarCalidadCargas, detectarPrefijosNuevos, CLASES_NO_FLOTA, cadenciaCargas, consumoDesdeActividadDeclarada, mediana, utilizacion, metaDesdeConsumoReal, parIdentico } from '../data/diagnostico.js';
 import { TIPO_POR_PREFIJO, MESES, getBandera, tipoLugarCarga, formatFechaAR, normalizeEquipoKey, getDenominacion } from '../data/normalizer.js';
-import { aplicarCorreccionesAutomaticas, deshacerAccionAutomatica } from '../data/autocorreccion.js';
+import { aplicarCorreccionesAutomaticas, deshacerAccionAutomatica, corregirAManoIdentidad } from '../data/autocorreccion.js';
 import { diasHabiles, esDiaHabil, esFeriado } from '../data/feriados.js';
 import { openUnitModal } from './modals.js';
 import { abrirAjusteMetas } from './metas.js';
@@ -1173,6 +1173,14 @@ function renderDiagnostico(analisis, rawRecords = []) {
                             ${esAccionAuto ? `
                             <button class="btn-xs btn-deshacer-auto" data-id="${esc(e.accion_id)}" title="Revertir esta corrección automática. No vuelve a aplicarse sola.">
                                 <i class="fa-solid fa-rotate-left"></i> Deshacer
+                            </button>
+                            ${['corregido_tipeo', 'corregido_servicio', 'patente_unificada'].includes(e.accion_tipo) ? `
+                            <button class="btn-xs btn-corregir-identidad" data-id="${esc(e.accion_id)}" title="Ingresar a mano el dato correcto. Reemplaza la corrección automática y también se puede deshacer.">
+                                <i class="fa-solid fa-pen"></i> Corregir a mano
+                            </button>` : ''}` : ''}
+                            ${e.corregir_patente ? `
+                            <button class="btn-xs btn-corregir-identidad" data-interno="${esc(e.interno)}" data-campo="patente" title="Ingresar la patente correcta de este interno. Se puede deshacer.">
+                                <i class="fa-solid fa-pen"></i> Corregir patente
                             </button>` : ''}
                             ${esCargasExceso ? `
                             <button class="btn-xs btn-ver-mes-cargas" data-interno="${esc(e.interno)}" data-anio="${esc(e.anio)}" data-mes="${esc(e.mes)}" title="Ver las cargas de ${esc(e.interno)} en ese mes en la tabla de cargas de combustible">
@@ -1484,6 +1492,24 @@ function renderDiagnostico(analisis, rawRecords = []) {
             if (!accion) return;
             const r = await deshacerAccionAutomatica(accion);
             if (!r.revertido) alert(r.motivo);
+            await renderPanel();
+        });
+    });
+
+    // Corregir a mano una identidad: la persona ingresa el dato correcto. Parte de una acción
+    // automática (reemplaza lo que hizo la app) o de un hallazgo sin resolver (patente doble sin
+    // mayoría clara). Los registros cambian en la base, así que hace falta un renderPanel() completo.
+    el.querySelectorAll('.btn-corregir-identidad').forEach(b => {
+        b.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const accion = b.dataset.id ? accionesAutomaticasCache.find(a => a.id === parseInt(b.dataset.id, 10)) : null;
+            const campo = accion ? (accion.tipo === 'patente_unificada' ? 'patente' : 'interno') : b.dataset.campo;
+            const codigo = accion ? accion.codigo : b.dataset.interno;
+            const pregunta = campo === 'patente' ? `Patente correcta de ${codigo}:` : `Código de equipo correcto para "${codigo}":`;
+            const valor = prompt(pregunta);
+            if (valor === null) return;
+            const r = await corregirAManoIdentidad({ accion, campo, codigo, valor });
+            if (!r.ok) { alert(r.motivo); return; }
             await renderPanel();
         });
     });
@@ -4116,7 +4142,16 @@ function abrirRevisarDecidir(hallazgoId, analisis, rawRecords, { trasAccion = fa
 
     // Al volver de una acción se reabre esta ventana: encadenar decisiones sobre el mismo grupo
     // es el caso normal, y obligar a reabrirla a mano es justamente lo que se vino a resolver.
-    const reabrir = async () => { await renderPanel(); abrirRevisarDecidir(hallazgoId, ultimoAnalisis, rawRecords, { trasAccion: true }); };
+    // Los registros se releen de datosCrudos: una corrección de identidad los reescribe, y con la copia
+    // de cuando se abrió la ventana volvería a listar como pendiente algo que ya quedó resuelto.
+    const reabrir = async () => { await renderPanel(); abrirRevisarDecidir(hallazgoId, ultimoAnalisis, datosCrudos?.rawRecords || rawRecords, { trasAccion: true }); };
+
+    // Un interno con dos patentes no tiene nada que ver con ralentí, metas ni GPS: se ofrece solo lo
+    // que aplica (corregir la patente a mano, o marcarlo como revisado) en vez de las 13 acciones.
+    if (hallazgoId === 'identidad_inconsistente') {
+        modal.querySelectorAll('.btn-rev-accion').forEach(b => { if (b.dataset.accion !== 'atendido') b.remove(); });
+        modal.querySelector('.diag-acciones-bar')?.insertAdjacentHTML('afterbegin', btn('corregir_patente', 'fa-pen', 'Corregir patente (lo tildado)', 'Ingresar a mano la patente correcta de cada interno tildado. Se puede deshacer.'));
+    }
 
     modal.querySelectorAll('.btn-rev-accion').forEach(b => {
         b.addEventListener('click', async () => {
@@ -4201,6 +4236,15 @@ function abrirRevisarDecidir(hallazgoId, analisis, rawRecords, { trasAccion = fa
                     noFlotaAceptadosCache = noFlotaAceptadosCache.filter(r => !internos.includes(r.codigo))
                         .concat(internos.map(codigo => ({ codigo, periodo: per })));
                     cerrar(); await reabrir(); break;
+                case 'corregir_patente': {
+                    for (const i of internos) {
+                        const valor = prompt(`Patente correcta de ${i}:`);
+                        if (valor === null) break;
+                        const r = await corregirAManoIdentidad({ campo: 'patente', codigo: i, valor });
+                        if (!r.ok) { alert(r.motivo); break; }
+                    }
+                    cerrar(); await reabrir(); break;
+                }
                 case 'atendido':
                     internos.forEach(i => marcarAtendido(hallazgoId, i, 'revisado'));
                     cerrar(); renderDiagnostico(analisis, rawRecords); break;

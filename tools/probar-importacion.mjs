@@ -132,6 +132,13 @@ check('identidad', '"ZZ-01 AA000AA" conserva la patente (antes la regla del guio
 check('identidad', 'se muestra como "INTERNO DOMINIO"', a.filas.find(f => f.equipo.interno === 'ZZ01')?.identidad === 'ZZ01 AA000AA', a.filas.find(f => f.equipo.interno === 'ZZ01')?.identidad);
 
 const hallazgos = generarDiagnostico(a.filas, a.totales, rawRecords, [], [], [], {});
+// Una correccion automatica deshecha no se lista mas como "aplicada sola": esta revertida.
+const conAcciones = generarDiagnostico(a.filas, a.totales, rawRecords, [], [], [], { accionesRecientes: [
+    { id: 1, tipo: 'corregido_tipeo', codigo: 'GR01', motivo: 'x', detalle: '', fecha: new Date().toISOString(), revisado: false, deshecha: true },
+    { id: 2, tipo: 'patente_unificada', codigo: 'MX59', motivo: 'y', detalle: '', fecha: new Date().toISOString(), revisado: false }
+] }).find(h => h.id === 'acciones_automaticas');
+check('diagnostico', 'una accion automatica deshecha no se lista, una vigente si',
+    !!conAcciones && conAcciones.equipos.length === 1 && conAcciones.equipos[0].interno === 'MX59', JSON.stringify(conAcciones?.equipos?.map(e => e.interno)));
 const hFuera = hallazgos.find(h => h.id === 'fuera_principal');
 check('diagnostico', 'un equipo sin cargas NO genera hallazgo: simplemente no se analiza', !hFuera);
 check('diagnostico', 'igual queda registrado en universo.fuera_principal, con su GPS primero', fuera[0]?.interno === 'ZZ03' || fuera.some(f => f.interno === 'ZZ03'), fuera.map(f => f.interno).join(','));

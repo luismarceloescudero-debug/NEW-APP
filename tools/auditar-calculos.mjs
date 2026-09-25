@@ -87,10 +87,10 @@ async function cargarTodo() {
     let analisis = analizarFlota({ equipos, rawRecords, estimados, filtro: { anio: null, periodos: [] } });
     const aplicado = await aplicarCorreccionesAutomaticas({
         equipos, huerfanos: analisis.totales.huerfanos, filas: analisis.filas,
-        codigosAceptados: new Set(noFlotaAceptados.map(n => n.codigo))
+        codigosAceptados: new Set(noFlotaAceptados.map(n => n.codigo)), rawRecords
     });
-    if (aplicado.altas || aplicado.aceptados || aplicado.metas) {
-        [equipos, noFlotaAceptados] = await Promise.all([getAllEquipos(), getNoFlotaAceptados()]);
+    if (aplicado.altas || aplicado.aceptados || aplicado.metas || aplicado.identidad) {
+        [equipos, noFlotaAceptados, rawRecords] = await Promise.all([getAllEquipos(), getNoFlotaAceptados(), getAllRawRecords()]);
         analisis = analizarFlota({ equipos, rawRecords, estimados, filtro: { anio: null, periodos: [] } });
     }
     const accionesAutomaticas = await getAccionesAutomaticas();

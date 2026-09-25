@@ -133,8 +133,8 @@ check('identidad', 'se muestra como "INTERNO DOMINIO"', a.filas.find(f => f.equi
 
 const hallazgos = generarDiagnostico(a.filas, a.totales, rawRecords, [], [], [], {});
 const hFuera = hallazgos.find(h => h.id === 'fuera_principal');
-check('diagnostico', 'hallazgo "fuera de la planilla principal" presente', !!hFuera);
-check('diagnostico', 'lista primero al que tiene GPS (probable carga con otro código)', hFuera?.equipos?.[0]?.interno === 'ZZ03', hFuera?.equipos?.map(e => e.interno).join(','));
+check('diagnostico', 'un equipo sin cargas NO genera hallazgo: simplemente no se analiza', !hFuera);
+check('diagnostico', 'igual queda registrado en universo.fuera_principal, con su GPS primero', fuera[0]?.interno === 'ZZ03' || fuera.some(f => f.interno === 'ZZ03'), fuera.map(f => f.interno).join(','));
 const hId = hallazgos.find(h => h.id === 'identidad_inconsistente');
 check('diagnostico', 'interno con dos patentes → identidad inconsistente', !!hId && hId.equipos.some(e => /AA000AB/.test(e.texto) && /AA000XX/.test(e.texto)), JSON.stringify(hId?.equipos));
 

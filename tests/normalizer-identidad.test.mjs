@@ -182,15 +182,16 @@ test('extraerIdentidad no se cae con celdas vacias', () => {
 
 // --- correcciones confirmadas --------------------------------------------------------------
 
-test('corregirCodigoConocido aplica las dos correcciones confirmadas por HSV', () => {
-    // GR01: un chofer tipeo GR01 en vez de GE01 esa semana. TP0101: un cero de mas.
-    assert.equal(corregirCodigoConocido('GR01'), 'GE01');
+test('corregirCodigoConocido corrige TP0101 y ya NO corrige GR01 a ciegas', () => {
+    // TP0101: un cero de mas. GR01 (un chofer tipeo GR01 en vez de GE01) salio de esta tabla: ahora lo
+    // resuelve resolucion-identidad.js con evidencia y queda revertible.
+    assert.equal(corregirCodigoConocido('GR01'), 'GR01', 'GR01 ya no se corrige fijo: lo resuelve la evidencia (lugar de carga), con Deshacer');
     assert.equal(corregirCodigoConocido('TP0101'), 'TP01');
 });
 
 test('corregirCodigoConocido normaliza antes de comparar', () => {
-    assert.equal(corregirCodigoConocido('gr-01'), 'GE01');
-    assert.equal(corregirCodigoConocido('GR 01'), 'GE01');
+    assert.equal(corregirCodigoConocido('tp-0101'), 'TP01');
+    assert.equal(corregirCodigoConocido('TP 0101'), 'TP01');
 });
 
 test('corregirCodigoConocido deja intacto todo lo demas', () => {

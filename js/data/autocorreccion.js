@@ -19,10 +19,12 @@
  * Cada acción se aplica directamente (no pide confirmación previa — eso volvería todo manual
  * otra vez) y queda anotada en `accionesAutomaticas` para poder revisarla o deshacerla después.
  */
-import { normalizeEquipoKey, clasificarIdentificador, getPrefijo, sugerirPosibleTypo } from './normalizer.js';
+import { normalizeEquipoKey, normalizeString, clasificarIdentificador, getPrefijo, sugerirPosibleTypo, TIPO_POR_PREFIJO } from './normalizer.js';
+import { proponerTipeo, servicioPorLugar, elegirPatente, SERVICIO_POR_SEDE } from './resolucion-identidad.js';
 import {
     upsertEquipos, setNoFlotaAceptado, quitarNoFlotaAceptado, updateEquipo, deleteEquipo,
-    registrarEdicion, registrarAccionAutomatica, marcarAccionDeshecha, getAllEquipos
+    registrarEdicion, registrarAccionAutomatica, marcarAccionDeshecha, getAllEquipos,
+    updateRawRecords, getAllRawRecords
 } from './database.js';
 import { metaDesdeConsumoReal } from './diagnostico.js';
 import { RULE_L_100KM, RULE_L_HORA, RULE_NO_TANK } from './analyzer.js';
@@ -46,8 +48,8 @@ const PREFIJOS_CALCULABLES = new Set([...RULE_L_100KM, ...RULE_L_HORA, ...RULE_N
  *                                 alguien deshizo a mano — ver marcarAccionDeshecha)
  * @returns {{altas: number, aceptados: number, metas: number}}
  */
-export async function aplicarCorreccionesAutomaticas({ equipos = [], huerfanos = [], filas = [], codigosAceptados = new Set(), accionesPrevias = [], periodo = null }) {
-    const resultado = { altas: 0, aceptados: 0, metas: 0 };
+export async function aplicarCorreccionesAutomaticas({ equipos = [], huerfanos = [], filas = [], codigosAceptados = new Set(), accionesPrevias = [], periodo = null, rawRecords = [] }) {
+    const resultado = { altas: 0, aceptados: 0, metas: 0, identidad: 0 };
     const internosExistentes = new Set(equipos.map(e => normalizeEquipoKey(e.interno)));
     // Una acción deshecha a mano NO se vuelve a aplicar aunque las condiciones que la
     // dispararon sigan iguales — si no, "Deshacer" no duraría ni hasta el próximo render.
@@ -70,6 +72,40 @@ export async function aplicarCorreccionesAutomaticas({ equipos = [], huerfanos =
         // "así está bien" — las dos acciones estarían adivinando en vez de confirmar contra el
         // comprobante. Queda como huérfano común; generarDiagnostico() lo señala aparte con la
         // sugerencia, para que se corrija a mano desde "Corregir" en Base de Datos.
+        // Servicio de planta escrito con su nombre (LIMPIEZA, CALDERA): la sede sale del lugar de
+        // carga de cada fila. Se reasigna y queda anotado para poder revertirlo.
+        if (SERVICIO_POR_SEDE[normalizeString(h.interno)]) {
+            if (deshechas.has(`corregido_servicio|${h.interno}`)) continue;
+            const cambios = await reasignarPorLugar(h.interno, rawRecords);
+            if (cambios.length) {
+                await registrarAccionAutomatica({
+                    tipo: 'corregido_servicio', codigo: h.interno,
+                    motivo: `Se escribió "${h.interno}" en vez del código de la sede: se resolvió por el lugar de carga de cada fila.`,
+                    detalle: `${cambios.length} carga${cambios.length === 1 ? '' : 's'} → ${[...new Set(cambios.map(c => c.cambios.interno))].join(', ')}`
+                });
+                resultado.identidad++;
+                continue;
+            }
+        }
+
+        // Tipeo de un interno real, con evidencia (mismo lugar de carga o centro de costo).
+        // Antes se dejaba siempre para revisión manual; sin la pista extra sigue igual.
+        const claveCodigo = normalizeEquipoKey(h.interno);
+        const tipeo = proponerTipeo(h.interno, rawRecords.filter(r => r.type === 'carga' && r.interno_key === claveCodigo),
+            rawRecords.filter(r => r.type === 'carga'), equipos);
+        if (tipeo && !deshechas.has(`corregido_tipeo|${h.interno}`)) {
+            const cambios = reasignar(rawRecords.filter(r => r.interno_key === claveCodigo), tipeo.destino);
+            if (cambios.length) {
+                await updateRawRecords(cambios);
+                await registrarAccionAutomatica({
+                    tipo: 'corregido_tipeo', codigo: h.interno,
+                    motivo: `"${h.interno}" es un error de tipeo de ${tipeo.destino}: ${tipeo.evidencia}.`,
+                    detalle: `${cambios.length} registro${cambios.length === 1 ? '' : 's'} → ${tipeo.destino}`
+                });
+                resultado.identidad++;
+                continue;
+            }
+        }
         if (sugerirPosibleTypo(h.interno, internosReales)) continue;
 
         if (clas.tipo === 'interno' && PREFIJOS_CALCULABLES.has(getPrefijo(clas.valor)) && !deshechas.has(`alta_interno|${clas.valor}`)) {
@@ -95,8 +131,47 @@ export async function aplicarCorreccionesAutomaticas({ equipos = [], huerfanos =
             });
             resultado.aceptados++;
         }
+        else if (clas.tipo === 'interno' && TIPO_POR_PREFIJO[getPrefijo(clas.valor)] && !PREFIJOS_CALCULABLES.has(getPrefijo(clas.valor)) && !deshechas.has(`aceptado_no_flota|${h.interno}`)) {
+            // CALDERA, LIMPIEZA, CALOVENTOR: tienen nombre y son gasto real, pero no rodantes: no hay
+            // L/100km ni L/hora que calcularles. No son un dato que falte: se aceptan como gasto de planta.
+            const nombre = TIPO_POR_PREFIJO[getPrefijo(clas.valor)];
+            await setNoFlotaAceptado(h.interno, `Gasto de planta (${nombre}): no es rodante, no hay consumo por km u hora que calcular.`);
+            await registrarAccionAutomatica({
+                tipo: 'aceptado_no_flota', codigo: h.interno,
+                motivo: `Servicio de planta (${nombre}): no se le puede calcular consumo por km ni por hora.`,
+                detalle: `${h.cargas} carga${h.cargas === 1 ? '' : 's'} · ${h.litros.toFixed(1)} L`
+            });
+            resultado.aceptados++;
+        }
         // clas.tipo === 'dominio': patente real sin interno en el padrón — se necesita saber a
         // mano de qué equipo se trata. Queda para revisión manual, sin tocar.
+    }
+
+    // Un interno con dos patentes en Cargas: se unifica en la que declara el maestro o en la
+    // claramente mayoritaria. Sin ganadora clara no se toca (queda como hallazgo).
+    const dominiosPor = new Map();
+    for (const r of rawRecords) {
+        if (r.type !== 'carga' || !r.interno_key || !r.dominio_key) continue;
+        if (!dominiosPor.has(r.interno_key)) dominiosPor.set(r.interno_key, { interno: r.interno, dominios: new Map() });
+        const d = dominiosPor.get(r.interno_key).dominios;
+        d.set(r.dominio, (d.get(r.dominio) || 0) + 1);
+    }
+    const maestroPorClave = new Map(equipos.map(e => [normalizeEquipoKey(e.interno), e]));
+    for (const [clave, { interno, dominios }] of dominiosPor) {
+        if (dominios.size < 2 || deshechas.has(`patente_unificada|${interno}`)) continue;
+        const gana = elegirPatente(dominios, maestroPorClave.get(clave)?.dominio);
+        if (!gana) continue;
+        const cambios = rawRecords
+            .filter(r => r.type === 'carga' && r.interno_key === clave && r.dominio && r.dominio !== gana.dominio)
+            .map(r => ({ id: r.id, cambios: { dominio: gana.dominio, dominio_key: normalizeEquipoKey(gana.dominio), _dominio_original: { dominio: r.dominio, dominio_key: r.dominio_key } } }));
+        if (!cambios.length) continue;
+        await updateRawRecords(cambios);
+        await registrarAccionAutomatica({
+            tipo: 'patente_unificada', codigo: interno,
+            motivo: `${interno} aparecía con más de una patente: se unificó en ${gana.dominio} porque ${gana.motivo}.`,
+            detalle: `${cambios.length} fila${cambios.length === 1 ? '' : 's'} corregida${cambios.length === 1 ? '' : 's'}`
+        });
+        resultado.identidad++;
     }
 
     const maestroPorInterno = new Map(equipos.map(e => [e.interno, e]));
@@ -139,6 +214,25 @@ export async function aplicarCorreccionesAutomaticas({ equipos = [], huerfanos =
     return resultado;
 }
 
+/** Cambios de identidad de una lista de registros hacia `destino`, recordando de dónde venían. */
+function reasignar(registros, destino) {
+    return registros.map(r => ({
+        id: r.id,
+        cambios: { interno: destino, interno_key: normalizeEquipoKey(destino), _alias_de: { interno: r.interno, interno_key: r.interno_key } }
+    }));
+}
+
+/** Servicio de planta escrito con su nombre: cada fila va al código de su sede, según su lugar de carga. */
+async function reasignarPorLugar(codigo, rawRecords) {
+    const clave = normalizeEquipoKey(codigo);
+    const cambios = rawRecords.filter(r => r.interno_key === clave).flatMap(r => {
+        const destino = servicioPorLugar(r.interno, r.lugar_carga);
+        return destino ? reasignar([r], destino) : [];
+    });
+    if (cambios.length) await updateRawRecords(cambios);
+    return cambios;
+}
+
 /**
  * Deshace una acción automática puntual — revierte el dato Y marca la acción como deshecha
  * (marcarAccionDeshecha), para que aplicarCorreccionesAutomaticas() no la vuelva a aplicar en
@@ -168,6 +262,18 @@ export async function deshacerAccionAutomatica(accion) {
     } else if (tipo === 'aceptado_no_flota') {
         await quitarNoFlotaAceptado(codigo);
         revertido = true; motivo = 'Código destildado de "así está bien".';
+    } else if (tipo === 'corregido_tipeo' || tipo === 'corregido_servicio') {
+        const clave = normalizeEquipoKey(codigo);
+        const cambios = (await getAllRawRecords()).filter(r => r._alias_de && r._alias_de.interno_key === clave)
+            .map(r => ({ id: r.id, cambios: { interno: r._alias_de.interno, interno_key: r._alias_de.interno_key, _alias_de: null } }));
+        await updateRawRecords(cambios);
+        revertido = true; motivo = `${cambios.length} registro${cambios.length === 1 ? '' : 's'} vuelve${cambios.length === 1 ? '' : 'n'} a "${codigo}".`;
+    } else if (tipo === 'patente_unificada') {
+        const clave = normalizeEquipoKey(codigo);
+        const cambios = (await getAllRawRecords()).filter(r => r._dominio_original && r.interno_key === clave)
+            .map(r => ({ id: r.id, cambios: { dominio: r._dominio_original.dominio, dominio_key: r._dominio_original.dominio_key, _dominio_original: null } }));
+        await updateRawRecords(cambios);
+        revertido = true; motivo = `${cambios.length} fila${cambios.length === 1 ? '' : 's'} recupera${cambios.length === 1 ? '' : 'n'} su patente original.`;
     } else if (tipo === 'meta_alineada') {
         const actual = (await getAllEquipos()).find(e => e.interno === codigo);
         if (!actual) { motivo = 'El equipo ya no existe en el maestro.'; }

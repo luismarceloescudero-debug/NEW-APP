@@ -13,7 +13,7 @@
  * vieja en caché bajen la nueva la próxima vez que abran la app con internet (`activate`
  * borra los caches de versiones anteriores).
  */
-const CACHE_VERSION = 'flotacontrol-v3';
+const CACHE_VERSION = 'flotacontrol-v4';
 
 const PRECACHE = [
     './',
@@ -37,6 +37,7 @@ const PRECACHE = [
     './js/ai/chat.js',
     './js/ai/ollama.js',
     './js/data/alcance.js',
+    './js/data/resolucion-identidad.js',
     './js/data/analyzer.js',
     './js/data/autocorreccion.js',
     './js/data/database.js',

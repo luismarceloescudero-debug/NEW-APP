@@ -398,10 +398,15 @@ export async function renderPanel() {
         const aplicado = await aplicarCorreccionesAutomaticas({
             equipos, huerfanos: ultimoAnalisis.totales.huerfanos, filas: ultimoAnalisis.filas,
             codigosAceptados: codigosAceptadosSet, accionesPrevias: accionesAutomaticasCache,
-            periodo: periodoDeAnalisis(ultimoAnalisis)
+            periodo: periodoDeAnalisis(ultimoAnalisis), rawRecords
         });
-        if (aplicado.altas || aplicado.aceptados || aplicado.metas) {
+        if (aplicado.altas || aplicado.aceptados || aplicado.metas || aplicado.identidad) {
             const [equiposFrescos, noFlotaFrescos, accionesFrescas] = await Promise.all([getAllEquipos(), getNoFlotaAceptados(), getAccionesAutomaticas()]);
+            // Las correcciones de identidad reescriben registros en la base: hay que volver a leerlos.
+            if (aplicado.identidad) {
+                const todos = await getAllRawRecords();
+                rawRecords = view.alcance ? filtrarPorAlcance(equiposFrescos, todos, view.alcance).rawRecords : todos;
+            }
             const equiposVigentes = view.alcance ? filtrarPorAlcance(equiposFrescos, rawRecords, view.alcance).equipos : equiposFrescos;
             datosCrudos = { equipos: equiposVigentes, rawRecords, estimados };
             noFlotaAceptadosCache = noFlotaFrescos;

@@ -97,10 +97,10 @@ async function main() {
     // manual (patente real sin interno, que autocorreccion.js nunca debe tocar).
     const codigosAceptadosSet = new Set(noFlotaAceptados.map(n => n.codigo));
     const aplicado = await aplicarCorreccionesAutomaticas({
-        equipos, huerfanos: analisis.totales.huerfanos, filas: analisis.filas, codigosAceptados: codigosAceptadosSet
+        equipos, huerfanos: analisis.totales.huerfanos, filas: analisis.filas, codigosAceptados: codigosAceptadosSet, rawRecords
     });
-    if (aplicado.altas || aplicado.aceptados || aplicado.metas) {
-        [equipos, noFlotaAceptados] = await Promise.all([getAllEquipos(), getNoFlotaAceptados()]);
+    if (aplicado.altas || aplicado.aceptados || aplicado.metas || aplicado.identidad) {
+        [equipos, noFlotaAceptados, rawRecords] = await Promise.all([getAllEquipos(), getNoFlotaAceptados(), getAllRawRecords()]);
         analisis = analizarFlota({ equipos, rawRecords, estimados, filtro: { anio: null, periodos: [] } });
     }
     const accionesAutomaticas = await getAccionesAutomaticas();

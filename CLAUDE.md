@@ -119,7 +119,7 @@ Correrlo **antes de commitear** cualquier cosa en `js/data/` o `js/parsers/`. Lo
 | `npm run auditar` | ¿Cada número se puede re-derivar de su propia definición? | minutos |
 
 **`npm test` — la suite de unit tests (`tests/*.test.mjs`, node:test, sin dependencias).**
-290 casos sobre las funciones puras de `js/data/` y `js/parsers/`. No reemplaza a ningún arnés
+308 casos sobre las funciones puras de `js/data/` y `js/parsers/`. No reemplaza a ningún arnés
 y ninguno lo reemplaza a él: los arneses corren el pipeline entero sobre los Excel reales y
 contestan *"¿el total cambió?"*; los tests fijan el **contrato de cada función por separado** y
 contestan *"¿esta pieza sigue haciendo lo que dice que hace?"* — sin planillas, en segundos, y
@@ -468,6 +468,27 @@ cargas no se analiza y no es un error (`totales.universo.fuera_principal` sigue 
 Verificado con `npm run verificar`: totales idénticos (678.429,5 L / 1.278.888,9 km / 83.189,2 hs).
 Cuidado: `CA`, `CL` y `LM` SÍ se dan de alta solos (están en las reglas de cálculo); la rama que
 acepta como "gasto de planta" un prefijo con nombre pero sin regla hoy no se dispara con estos datos.
+
+### Servicios de planta (25/09/2026, `js/data/planta.js`)
+
+Caldera (CA), caloventor (CL), limpieza (LM) y motocompresor (MT) consumen por tiempo de uso, sin GPS
+ni km. **No se les pide actividad (no es un dato que falte) pero su gasto se queda para análisis**:
+salen de los hallazgos de consumo rodante (`sin_medicion`, subutilización, etc.) y tienen el suyo,
+`servicios_planta`, con: cargas, litros, **litros por día hábil ponderado** (Lun–Vie 1, Sáb medio día,
+`diasHabiles()`), horas y km de las otras planillas si existen, y comparación contra pares.
+
+- **Meses sin cargas**: si un servicio cargó solo algunos meses de ene–ago, en los demás se asume
+  **temporada baja si carga en ARIDOS** (lugar de carga o sector) y **fuera de servicio si carga en
+  otro lugar**. Se guarda como estado del equipo (`seguimientoEquipos`, con `auto: true` y los rangos
+  por tramo de meses), así que también ajusta el denominador de cobertura. Nunca pisa un estado que la
+  persona ya anotó; "Estado" lo corrige y **Deshacer** lo quita solo si sigue siendo automático.
+  Se registra como acción `estado_planta`.
+- **Pares** (`paresComparables()`): mismo tipo; entre esos, marca, modelo, potencia y capacidad (un
+  punto cada una) y a igual puntaje el año más cercano.
+- Mutation testing dirigido: 15 de 15 mutaciones de `planta.js` detectadas por `tests/planta.test.mjs`.
+- Medido con los archivos reales: 8 servicios (4.631 L), 7 estados asumidos; totales sin cambio.
+- Sigue abierto: las "otras planillas" solo aportan horas/km si el servicio aparece en ellas; hoy
+  ninguno tiene GPS.
 
 ### Un mes cubierto a medias no entra al ratio
 

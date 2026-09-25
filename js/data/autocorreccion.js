@@ -21,10 +21,11 @@
  */
 import { normalizeEquipoKey, normalizeString, clasificarIdentificador, getPrefijo, sugerirPosibleTypo, TIPO_POR_PREFIJO } from './normalizer.js';
 import { proponerTipeo, servicioPorLugar, elegirPatente, SERVICIO_POR_SEDE } from './resolucion-identidad.js';
+import { esServicioPlanta, inferirEstadoPlanta } from './planta.js';
 import {
     upsertEquipos, setNoFlotaAceptado, quitarNoFlotaAceptado, updateEquipo, deleteEquipo,
     registrarEdicion, registrarAccionAutomatica, marcarAccionDeshecha, getAllEquipos,
-    updateRawRecords, getAllRawRecords
+    updateRawRecords, getAllRawRecords, getSeguimientoEquipos, setSeguimientoAutomatico, quitarSeguimientoEquipo
 } from './database.js';
 import { metaDesdeConsumoReal } from './diagnostico.js';
 import { RULE_L_100KM, RULE_L_HORA, RULE_NO_TANK } from './analyzer.js';
@@ -188,6 +189,25 @@ export async function aplicarCorreccionesAutomaticas({ equipos = [], huerfanos =
         resultado.identidad++;
     }
 
+    // Servicio de planta que cargo solo algunos meses: se asume temporada baja (ARIDOS) o fuera de
+    // servicio (otro lugar) en los meses sin cargas. Nunca pisa un estado que la persona ya anoto.
+    if (periodo) {
+        const yaAnotados = new Set((await getSeguimientoEquipos()).map(s => s.interno));
+        for (const f of filas) {
+            const interno = f.equipo.interno;
+            if (!esServicioPlanta(interno) || yaAnotados.has(interno) || deshechas.has(`estado_planta|${interno}`)) continue;
+            const est = inferirEstadoPlanta({ cargas: f.cargas || [], periodo });
+            if (!est) continue;
+            await setSeguimientoAutomatico(interno, est.motivo, est.categoria, est.rangos);
+            await registrarAccionAutomatica({
+                tipo: 'estado_planta', codigo: interno,
+                motivo: est.motivo,
+                detalle: `${est.mesesConCarga.length} de ${est.mesesPeriodo.length} meses con carga`
+            });
+            resultado.identidad++;
+        }
+    }
+
     const maestroPorInterno = new Map(equipos.map(e => [e.interno, e]));
     for (const f of filas) {
         if (f.confirmed) continue; // ya tiene meta (de fábrica, o ya alineada antes)
@@ -288,6 +308,10 @@ export async function deshacerAccionAutomatica(accion) {
             .map(r => ({ id: r.id, cambios: { dominio: r._dominio_original.dominio, dominio_key: r._dominio_original.dominio_key, _dominio_original: null } }));
         await updateRawRecords(cambios);
         revertido = true; motivo = `${cambios.length} fila${cambios.length === 1 ? '' : 's'} recupera${cambios.length === 1 ? '' : 'n'} su patente original.`;
+    } else if (tipo === 'estado_planta') {
+        const actual = (await getSeguimientoEquipos()).find(s => s.interno === codigo);
+        if (actual && actual.auto) { await quitarSeguimientoEquipo(codigo); revertido = true; motivo = 'Estado asumido quitado.'; }
+        else motivo = 'El estado ya lo corrigió una persona: se conserva, y la acción queda como deshecha.';
     } else if (tipo === 'meta_alineada') {
         const actual = (await getAllEquipos()).find(e => e.interno === codigo);
         if (!actual) { motivo = 'El equipo ya no existe en el maestro.'; }

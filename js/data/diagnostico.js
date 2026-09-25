@@ -11,6 +11,7 @@
 
 import { getPrefijo, clasificarIdentificador, MESES, normalizeEquipoKey, TIPO_POR_PREFIJO, provinciaDeCentroCosto, sugerirPosibleTypo } from './normalizer.js';
 import { diasHabiles, esDiaHabil } from './feriados.js';
+import { esServicioPlanta, inferirEstadoPlanta, paresComparables } from './planta.js';
 import { jornadaEsperada, jornadaPonderada, jornadaDelMes, mesesEntre, mesesDeRegistro, registroVacio } from './analyzer.js';
 
 // `hallazgo.detalle` se renderiza como HTML crudo en panel.js (para poder llevar <strong>
@@ -1478,6 +1479,13 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
     const noFlotaAlta = filas.filter(f => f.equipo.no_flota);
     filas = filas.filter(f => !f.equipo.no_flota);
 
+    // Servicios de planta (caldera, caloventor, limpieza, motocompresor): consumen por tiempo de uso,
+    // sin GPS. No se les pide km ni horas (no son un dato que falte) y salen de los hallazgos de
+    // consumo rodante, pero su gasto SE QUEDA para analisis en su propio hallazgo (servicios_planta).
+    const todasLasFilas = filas;
+    const plantaFilas = filas.filter(f => esServicioPlanta(f.equipo.interno) && f.metrics.cantidad_cargas > 0);
+    filas = filas.filter(f => !esServicioPlanta(f.equipo.interno));
+
     // Estado que el usuario le asignó al ralentí de un equipo puntual (aceptable/seguimiento):
     // "aceptable" saca al equipo de los hallazgos de ralentí de ahora en más (sin borrar el
     // dato, solo cómo se interpreta); "seguimiento" lo deja visible pero marcado.
@@ -1615,12 +1623,13 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
         !a.revisado && !a.deshecha && a.tipo !== 'alta_interno' &&
         !(a.tipo === 'aceptado_no_flota' && !codigosQueAportan.has(normalizeEquipoKey(a.codigo))));
     if (accionesRecientes.length) {
-        const porTipo = { alta_interno: [], aceptado_no_flota: [], meta_alineada: [], corregido_tipeo: [], corregido_servicio: [], patente_unificada: [] };
+        const porTipo = { alta_interno: [], aceptado_no_flota: [], meta_alineada: [], corregido_tipeo: [], corregido_servicio: [], patente_unificada: [], estado_planta: [] };
         accionesRecientes.forEach(a => { (porTipo[a.tipo] || (porTipo[a.tipo] = [])).push(a); });
         const partes = [];
         if (porTipo.aceptado_no_flota.length) partes.push(`${porTipo.aceptado_no_flota.length} código${porTipo.aceptado_no_flota.length === 1 ? '' : 's'} sin identificar aceptado${porTipo.aceptado_no_flota.length === 1 ? '' : 's'} como "así está bien"`);
         const nIdent = porTipo.corregido_tipeo.length + porTipo.corregido_servicio.length;
         if (nIdent) partes.push(`${nIdent} código${nIdent === 1 ? '' : 's'} mal escrito${nIdent === 1 ? '' : 's'} corregido${nIdent === 1 ? '' : 's'}`);
+        if (porTipo.estado_planta.length) partes.push(`${porTipo.estado_planta.length} estado${porTipo.estado_planta.length === 1 ? '' : 's'} asumido${porTipo.estado_planta.length === 1 ? '' : 's'} en servicios de planta`);
         if (porTipo.patente_unificada.length) partes.push(`${porTipo.patente_unificada.length} patente${porTipo.patente_unificada.length === 1 ? '' : 's'} unificada${porTipo.patente_unificada.length === 1 ? '' : 's'}`);
         if (porTipo.meta_alineada.length) partes.push(`${porTipo.meta_alineada.length} meta${porTipo.meta_alineada.length === 1 ? '' : 's'} alineada${porTipo.meta_alineada.length === 1 ? '' : 's'} al consumo real`);
         hallazgos.push({
@@ -1628,10 +1637,10 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
             titulo: accionesRecientes.length === 1
                 ? `1 corrección se aplicó sola: ${partes.join(', ')}`
                 : `${accionesRecientes.length} correcciones se aplicaron solas: ${partes.join(', ')}`,
-            detalle: `El diagnóstico automático resuelve solo lo que no tiene ambigüedad — nunca adivina, solo actúa donde el siguiente paso es el único posible. <strong>Equipo nuevo dado de alta:</strong> el código tenía forma de interno válida y la app sabe calcularle algo, y no existía en el maestro. <strong>Aceptado "así está bien":</strong> el código no tiene forma de interno ni de patente, no hay más dato para resolverlo. <strong>Meta alineada:</strong> el equipo no tenía meta cargada, se usó su propio consumo real medido — se pisa sola en cuanto llegue el valor de fábrica real. <strong>Código corregido:</strong> estaba a una letra de un equipo real y compartía con él el lugar de carga o el centro de costo (o era un servicio de planta escrito con su nombre, resuelto por la sede). <strong>Patente unificada:</strong> un interno figuraba con dos patentes; ganó la del maestro o la claramente mayoritaria. <strong>Deshacer</strong> revierte exactamente esa acción (borra el alta, destilda el código, vacía la meta, o devuelve el código y la patente originales) y no vuelve a aplicarse sola en la próxima sesión.`,
+            detalle: `El diagnóstico automático resuelve solo lo que no tiene ambigüedad — nunca adivina, solo actúa donde el siguiente paso es el único posible. <strong>Equipo nuevo dado de alta:</strong> el código tenía forma de interno válida y la app sabe calcularle algo, y no existía en el maestro. <strong>Aceptado "así está bien":</strong> el código no tiene forma de interno ni de patente, no hay más dato para resolverlo. <strong>Meta alineada:</strong> el equipo no tenía meta cargada, se usó su propio consumo real medido — se pisa sola en cuanto llegue el valor de fábrica real. <strong>Código corregido:</strong> estaba a una letra de un equipo real y compartía con él el lugar de carga o el centro de costo (o era un servicio de planta escrito con su nombre, resuelto por la sede). <strong>Patente unificada:</strong> un interno figuraba con dos patentes; ganó la del maestro o la claramente mayoritaria. <strong>Estado asumido:</strong> un servicio de planta que cargó solo algunos meses; los demás se asumen temporada baja (ARIDOS) o fuera de servicio, y se corrige desde "Estado". <strong>Deshacer</strong> revierte exactamente esa acción (borra el alta, destilda el código, vacía la meta, quita el estado asumido, o devuelve el código y la patente originales) y no vuelve a aplicarse sola en la próxima sesión.`,
             equipos: accionesRecientes.slice(0, 15).map(a => ({
                 interno: a.codigo, denominacion: '',
-                texto: { alta_interno: 'equipo nuevo', meta_alineada: 'meta alineada', corregido_tipeo: 'código corregido', corregido_servicio: 'código corregido', patente_unificada: 'patente unificada' }[a.tipo] || 'aceptado',
+                texto: { alta_interno: 'equipo nuevo', meta_alineada: 'meta alineada', corregido_tipeo: 'código corregido', corregido_servicio: 'código corregido', patente_unificada: 'patente unificada', estado_planta: 'estado asumido' }[a.tipo] || 'aceptado',
                 sub: `${a.motivo} ${a.detalle ? '· ' + a.detalle : ''} · ${new Date(a.fecha).toLocaleDateString('es-AR')}`,
                 accion_id: a.id, accion_tipo: a.tipo
             }))
@@ -2187,6 +2196,46 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
     // marcar, es simplemente estar fuera del analisis. La lista sigue disponible en
     // totales.universo.fuera_principal para quien la muestre (ver panel-generico.js).
     const universo = totales.universo || {};
+
+    // ---------- 8a-quater. Servicios de planta: cargas frente a dias habiles, contra sus pares ----------
+    // Cargan de forma esporadica o muy poco y eso es normal, asi que no se los mide por km ni por
+    // hora: se ve cuantas cargas y litros tuvieron en el periodo frente a los dias habiles
+    // (Lun-Vie 1, Sab medio dia), y contra el par mas parecido (mismo tipo; marca, modelo, potencia,
+    // capacidad y anio mas cercano). Los meses sin cargas se asumen temporada baja (ARIDOS) o
+    // fuera de servicio (otro lugar), y siempre se puede corregir desde Estado.
+    if (plantaFilas.length && periodo.desde && periodo.hasta) {
+        const dias = diasHabiles(periodo.desde, periodo.hasta).diasPonderados;
+        const litrosPorDia = (f) => (dias > 0 ? f.metrics.total_litros / dias : 0);
+        const todasPlanta = todasLasFilas.filter(f => esServicioPlanta(f.equipo.interno) && f.metrics.cantidad_cargas > 0);
+        const litrosTotales = plantaFilas.reduce((s, f) => s + f.metrics.total_litros, 0);
+        hallazgos.push({
+            id: 'servicios_planta', severidad: 'baja', icono: 'fa-industry', no_comparar: true,
+            internos_todos: plantaFilas.map(f => f.equipo.interno),
+            titulo: `${plantaFilas.length} servicio${plantaFilas.length === 1 ? '' : 's'} de planta con consumo de combustible (${fmt(litrosTotales)} L)`,
+            detalle: `Caldera, caloventor, limpieza y motocompresor no tienen GPS ni km: <strong>no es un dato que falte</strong>. Sus cargas son gasto real y se analizan por <strong>cantidad de cargas, litros y días hábiles del período</strong> (lunes a viernes cuentan 1, sábados medio día: ${fmt(dias, 1)} días ponderados). Cargar poco o de forma esporádica es normal. Cada uno se compara contra su par más parecido: mismo tipo y, entre esos, marca, modelo, potencia, capacidad y año más cercano. Los meses sin cargas se asumen <strong>temporada baja</strong> si carga en ARIDOS y <strong>fuera de servicio</strong> si carga en otro lugar; se corrige desde "Estado".`,
+            equipos: plantaFilas.map(f => {
+                const interno = f.equipo.interno;
+                const est = inferirEstadoPlanta({ cargas: f.cargas || [], periodo });
+                const pares = paresComparables(f.equipo, todasPlanta.map(x => x.equipo));
+                const mejor = pares[0];
+                const filaPar = mejor && todasPlanta.find(x => x.equipo.interno === mejor.equipo.interno);
+                const conPares = pares.length ? mediana(pares.map(p => litrosPorDia(todasPlanta.find(x => x.equipo.interno === p.equipo.interno)))) : null;
+                const partes = [
+                    `${f.metrics.cantidad_cargas} carga${f.metrics.cantidad_cargas === 1 ? '' : 's'}`,
+                    `${fmt(litrosPorDia(f), 2)} L por día hábil ponderado`
+                ];
+                if (est) partes.push(`${est.mesesConCarga.length} de ${est.mesesPeriodo.length} meses con carga · se asume ${est.categoria === 'temporada_baja' ? 'temporada baja' : 'fuera de servicio'} el resto`);
+                if (conPares !== null) partes.push(`pares del mismo tipo (${pares.length}): mediana ${fmt(conPares, 2)} L/día hábil${filaPar ? ` · el más parecido, ${mejor.equipo.interno}: ${fmt(litrosPorDia(filaPar), 2)}` : ''}`);
+                if (f.metrics.total_horas > 0) partes.push(`${fmt(f.metrics.total_horas, 1)} hs de otras planillas`);
+                if (f.metrics.total_km > 0) partes.push(`${fmt(f.metrics.total_km)} km de otras planillas`);
+                return {
+                    interno, denominacion: f.equipo.denominacion || '',
+                    texto: `${fmt(f.metrics.total_litros)} L`,
+                    sub: partes.join(' · ')
+                };
+            })
+        });
+    }
 
     // ---------- 8a-ter. Mismo interno con más de un dominio en la planilla principal ----------
     // La identidad es "INTERNO DOMINIO": si un interno aparece con dos patentes distintas, una

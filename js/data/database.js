@@ -871,9 +871,20 @@ export function setSeguimientoEquipo(interno, motivo = '', categoria = 'otro', r
             store.put({
                 ...actual,
                 interno, motivo, categoria, fecha: new Date().toISOString(),
+                auto: false, // una edicion a mano deja de ser "automatica": Deshacer ya no la borra
                 ...(rangos !== undefined ? { rangos } : {})
             });
         };
+    });
+}
+/**
+ * Estado asumido por la app (servicio de planta sin cargas en algunos meses). Igual que el manual,
+ * pero marcado `auto: true` para que Deshacer solo borre lo que puso la app, nunca lo que la persona
+ * corrigio despues (setSeguimientoEquipo pone `auto: false`).
+ */
+export function setSeguimientoAutomatico(interno, motivo, categoria, rangos) {
+    return writeTx(['seguimientoEquipos'], ([store]) => {
+        store.put({ interno, motivo, categoria, rangos, auto: true, fecha: new Date().toISOString() });
     });
 }
 /** Actualiza solo el array de rangos de un equipo sin tocar categoria/motivo. */

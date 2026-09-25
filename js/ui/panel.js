@@ -404,6 +404,8 @@ export async function renderPanel() {
             const [equiposFrescos, noFlotaFrescos, accionesFrescas] = await Promise.all([getAllEquipos(), getNoFlotaAceptados(), getAccionesAutomaticas()]);
             // Las correcciones de identidad reescriben registros en la base: hay que volver a leerlos.
             if (aplicado.identidad) {
+                // Los estados asumidos (servicios de planta) se guardan en seguimientoEquipos.
+                seguimientoEquiposCache = new Map((await getSeguimientoEquipos()).map(s => [s.interno, s]));
                 const todos = await getAllRawRecords();
                 rawRecords = view.alcance ? filtrarPorAlcance(equiposFrescos, todos, view.alcance).rawRecords : todos;
             }

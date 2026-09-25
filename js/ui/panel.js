@@ -7,9 +7,9 @@
 import { getAlcanceDecision, setAlcanceDecision, getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, editarCampoEquipo, getRalentiEstados, setRalentiEstado, quitarRalentiEstado, crearReclamoGPS, getReclamosGPS, actualizarReclamoGPS, getNoFlotaAceptados, setNoFlotaAceptado, quitarNoFlotaAceptado, getEquiposExcluidos, setEquipoExcluido, quitarEquipoExcluido, updateRawRecord, registrarEdicion, saveCorreccionCarga, huellaCarga, getPrefijosNoFlota, agregarPrefijoNoFlota, quitarPrefijoNoFlota, getSeguimientoEquipos, setSeguimientoEquipo, setSeguimientoRangos, quitarSeguimientoEquipo, getActividadEstimada, setActividadEstimada, quitarActividadEstimada, deleteRawRecord, getAccionesAutomaticas, getReferentesMeta, setReferentesMeta, getPlanillaPrincipal } from '../data/database.js';
 import { analizarFlota, periodosDisponibles, periodosAnalisisAutomatico, resumirMovimientosGenericos, registroVacio, mesesDeRegistro } from '../data/analyzer.js';
 import { detectarAlcanceParcial, filtrarPorAlcance } from '../data/alcance.js';
-import { generarDiagnostico, sugerirMeta, evolucionMensual, categoriaRalenti, actividadImplicita, coberturaEquipo, completitudDatos, mesesFueraDeServicio, causaMetaRara, estimacionCreible, NIVELES_COMPLETITUD, coberturaMensual, resolverEquipo, investigarMeta, potenciaEquipo, auditarCalidadCargas, detectarPrefijosNuevos, CLASES_NO_FLOTA, cadenciaCargas, consumoDesdeActividadDeclarada, mediana, utilizacion, metaDesdeConsumoReal, parIdentico } from '../data/diagnostico.js';
+import { generarDiagnostico, sugerirMeta, evolucionMensual, categoriaRalenti, actividadImplicita, coberturaEquipo, completitudDatos, mesesFueraDeServicio, causaMetaRara, estimacionCreible, NIVELES_COMPLETITUD, coberturaMensual, resolverEquipo, investigarMeta, potenciaEquipo, auditarCalidadCargas, detectarPrefijosNuevos, CLASES_NO_FLOTA, cadenciaCargas, consumoDesdeActividadDeclarada, mediana, utilizacion, metaDesdeConsumoReal, parIdentico, huerfanoAporta } from '../data/diagnostico.js';
 import { TIPO_POR_PREFIJO, MESES, getBandera, tipoLugarCarga, formatFechaAR, normalizeEquipoKey, getDenominacion } from '../data/normalizer.js';
-import { aplicarCorreccionesAutomaticas, deshacerAccionAutomatica } from '../data/autocorreccion.js';
+import { aplicarCorreccionesAutomaticas, deshacerAccionAutomatica, corregirAManoIdentidad } from '../data/autocorreccion.js';
 import { diasHabiles, esDiaHabil, esFeriado } from '../data/feriados.js';
 import { openUnitModal } from './modals.js';
 import { abrirAjusteMetas } from './metas.js';
@@ -398,10 +398,15 @@ export async function renderPanel() {
         const aplicado = await aplicarCorreccionesAutomaticas({
             equipos, huerfanos: ultimoAnalisis.totales.huerfanos, filas: ultimoAnalisis.filas,
             codigosAceptados: codigosAceptadosSet, accionesPrevias: accionesAutomaticasCache,
-            periodo: periodoDeAnalisis(ultimoAnalisis)
+            periodo: periodoDeAnalisis(ultimoAnalisis), rawRecords
         });
-        if (aplicado.altas || aplicado.aceptados || aplicado.metas) {
+        if (aplicado.altas || aplicado.aceptados || aplicado.metas || aplicado.identidad) {
             const [equiposFrescos, noFlotaFrescos, accionesFrescas] = await Promise.all([getAllEquipos(), getNoFlotaAceptados(), getAccionesAutomaticas()]);
+            // Las correcciones de identidad reescriben registros en la base: hay que volver a leerlos.
+            if (aplicado.identidad) {
+                const todos = await getAllRawRecords();
+                rawRecords = view.alcance ? filtrarPorAlcance(equiposFrescos, todos, view.alcance).rawRecords : todos;
+            }
             const equiposVigentes = view.alcance ? filtrarPorAlcance(equiposFrescos, rawRecords, view.alcance).equipos : equiposFrescos;
             datosCrudos = { equipos: equiposVigentes, rawRecords, estimados };
             noFlotaAceptadosCache = noFlotaFrescos;
@@ -891,6 +896,20 @@ function abrirAlcanceModal(det) {
     modal.querySelector('.btn-alcance-todos').addEventListener('click', () => aplicarAlcance(det, 'todos'));
 }
 
+// Códigos de las cargas que no figuran en el maestro Y todavía nadie resolvió. Los ya aceptados
+// (patente sin interno con centro de costo, servicio de planta) siguen sumando a los totales como
+// "sin asignar" —es gasto real—, pero dejan de figurar como algo por hacer.
+function pendientesDeIdentificar(t) {
+    const aceptados = new Set(noFlotaAceptadosCache.map(r => normalizeEquipoKey(r.codigo)));
+    // Un código sin litros, km ni horas (un nombre de cliente que solo aparece en Loop) no aporta nada que resolver.
+    return (t.huerfanos || []).filter(h => huerfanoAporta(h) && !aceptados.has(normalizeEquipoKey(h.interno)));
+}
+function subCodigosSinEquipo(t) {
+    const pend = pendientesDeIdentificar(t).length;
+    const resueltos = (t.huerfanos || []).filter(h => huerfanoAporta(h)).length - pend;
+    return `${t.equipos_con_datos} con actividad · ${pend} por identificar` + (resueltos ? ` · ${resueltos} ya resuelto${resueltos === 1 ? '' : 's'}` : '');
+}
+
 function renderKPIs(el, t, fuentes, comparativas = []) {
     let rango;
     if (t.periodo_desde && t.periodo_hasta) rango = `${t.periodo_desde} → ${t.periodo_hasta}`;
@@ -975,10 +994,10 @@ function renderKPIs(el, t, fuentes, comparativas = []) {
                     ] : []),
                     { texto: 'Ajustar metas', icono: 'fa-sliders', primaria: t.sobre_meta === 0, onClick: () => abrirAjusteMetas(ultimoAnalisis, t.sobre_meta > 0 ? 'excedidos' : 'todos') }
                 ] })}
-            ${kpi({ id: 'kpi-equipos', label: 'Equipos', valor: String(t.equipos), sub: `${t.equipos_con_datos} con actividad · ${t.huerfanos.length} códigos sin padrón`, clase: t.huerfanos.length ? 'kpi-warn' : '', titulo: 'Equipos del maestro', pasos: t.pasos.equipos,
+            ${kpi({ id: 'kpi-equipos', label: 'Equipos', valor: String(t.equipos), sub: subCodigosSinEquipo(t), clase: pendientesDeIdentificar(t).length ? 'kpi-warn' : '', titulo: 'Equipos del maestro', pasos: t.pasos.equipos,
                 acciones: [
                     { texto: 'Ver maestro de equipos', icono: 'fa-table-list', primaria: true, onClick: () => window.abrirTablaConBusqueda?.('maestro', '') },
-                    ...(t.huerfanos.length ? [{ texto: `Ver ${t.huerfanos.length} código${t.huerfanos.length === 1 ? '' : 's'} sin padrón`, icono: 'fa-triangle-exclamation', onClick: () => window.abrirTablaConBusqueda?.('carga', (t.huerfanos[0]?.interno || t.huerfanos[0]?.dominio || '')) }] : [])
+                    ...(pendientesDeIdentificar(t).length ? [{ texto: `Ver ${pendientesDeIdentificar(t).length} código${pendientesDeIdentificar(t).length === 1 ? '' : 's'} por identificar`, icono: 'fa-triangle-exclamation', onClick: () => window.abrirTablaConBusqueda?.('carga', (pendientesDeIdentificar(t)[0]?.interno || pendientesDeIdentificar(t)[0]?.dominio || '')) }] : [])
                 ] })}
         </div>`;
 }
@@ -1165,9 +1184,17 @@ function renderDiagnostico(analisis, rawRecords = []) {
                             <button class="btn-xs btn-nofl-valido" data-codigo="${esc(e.interno)}" title="Marcar que este código está bien así (ej. un vehículo de préstamo/demo sin interno propio): sale de este hallazgo de ahora en más">
                                 <i class="fa-solid fa-check"></i> Así está bien
                             </button>` : ''}
-                            ${esAccionAuto ? `
+                            ${esAccionAuto ? `<span class="diag-acciones-fila">
                             <button class="btn-xs btn-deshacer-auto" data-id="${esc(e.accion_id)}" title="Revertir esta corrección automática. No vuelve a aplicarse sola.">
                                 <i class="fa-solid fa-rotate-left"></i> Deshacer
+                            </button>
+                            ${['corregido_tipeo', 'corregido_servicio', 'patente_unificada'].includes(e.accion_tipo) ? `
+                            <button class="btn-xs btn-corregir-identidad" data-id="${esc(e.accion_id)}" title="Ingresar a mano el dato correcto. Reemplaza la corrección automática y también se puede deshacer.">
+                                <i class="fa-solid fa-pen"></i> Corregir a mano
+                            </button>` : ''}</span>` : ''}
+                            ${e.corregir_patente ? `
+                            <button class="btn-xs btn-corregir-identidad" data-interno="${esc(e.interno)}" data-campo="patente" title="Ingresar la patente correcta de este interno. Se puede deshacer.">
+                                <i class="fa-solid fa-pen"></i> Corregir patente
                             </button>` : ''}
                             ${esCargasExceso ? `
                             <button class="btn-xs btn-ver-mes-cargas" data-interno="${esc(e.interno)}" data-anio="${esc(e.anio)}" data-mes="${esc(e.mes)}" title="Ver las cargas de ${esc(e.interno)} en ese mes en la tabla de cargas de combustible">
@@ -1479,6 +1506,24 @@ function renderDiagnostico(analisis, rawRecords = []) {
             if (!accion) return;
             const r = await deshacerAccionAutomatica(accion);
             if (!r.revertido) alert(r.motivo);
+            await renderPanel();
+        });
+    });
+
+    // Corregir a mano una identidad: la persona ingresa el dato correcto. Parte de una acción
+    // automática (reemplaza lo que hizo la app) o de un hallazgo sin resolver (patente doble sin
+    // mayoría clara). Los registros cambian en la base, así que hace falta un renderPanel() completo.
+    el.querySelectorAll('.btn-corregir-identidad').forEach(b => {
+        b.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const accion = b.dataset.id ? accionesAutomaticasCache.find(a => a.id === parseInt(b.dataset.id, 10)) : null;
+            const campo = accion ? (accion.tipo === 'patente_unificada' ? 'patente' : 'interno') : b.dataset.campo;
+            const codigo = accion ? accion.codigo : b.dataset.interno;
+            const pregunta = campo === 'patente' ? `Patente correcta de ${codigo}:` : `Código de equipo correcto para "${codigo}":`;
+            const valor = prompt(pregunta);
+            if (valor === null) return;
+            const r = await corregirAManoIdentidad({ accion, campo, codigo, valor });
+            if (!r.ok) { alert(r.motivo); return; }
             await renderPanel();
         });
     });
@@ -4111,7 +4156,16 @@ function abrirRevisarDecidir(hallazgoId, analisis, rawRecords, { trasAccion = fa
 
     // Al volver de una acción se reabre esta ventana: encadenar decisiones sobre el mismo grupo
     // es el caso normal, y obligar a reabrirla a mano es justamente lo que se vino a resolver.
-    const reabrir = async () => { await renderPanel(); abrirRevisarDecidir(hallazgoId, ultimoAnalisis, rawRecords, { trasAccion: true }); };
+    // Los registros se releen de datosCrudos: una corrección de identidad los reescribe, y con la copia
+    // de cuando se abrió la ventana volvería a listar como pendiente algo que ya quedó resuelto.
+    const reabrir = async () => { await renderPanel(); abrirRevisarDecidir(hallazgoId, ultimoAnalisis, datosCrudos?.rawRecords || rawRecords, { trasAccion: true }); };
+
+    // Un interno con dos patentes no tiene nada que ver con ralentí, metas ni GPS: se ofrece solo lo
+    // que aplica (corregir la patente a mano, o marcarlo como revisado) en vez de las 13 acciones.
+    if (hallazgoId === 'identidad_inconsistente') {
+        modal.querySelectorAll('.btn-rev-accion').forEach(b => { if (b.dataset.accion !== 'atendido') b.remove(); });
+        modal.querySelector('.diag-acciones-bar')?.insertAdjacentHTML('afterbegin', btn('corregir_patente', 'fa-pen', 'Corregir patente (lo tildado)', 'Ingresar a mano la patente correcta de cada interno tildado. Se puede deshacer.'));
+    }
 
     modal.querySelectorAll('.btn-rev-accion').forEach(b => {
         b.addEventListener('click', async () => {
@@ -4196,6 +4250,15 @@ function abrirRevisarDecidir(hallazgoId, analisis, rawRecords, { trasAccion = fa
                     noFlotaAceptadosCache = noFlotaAceptadosCache.filter(r => !internos.includes(r.codigo))
                         .concat(internos.map(codigo => ({ codigo, periodo: per })));
                     cerrar(); await reabrir(); break;
+                case 'corregir_patente': {
+                    for (const i of internos) {
+                        const valor = prompt(`Patente correcta de ${i}:`);
+                        if (valor === null) break;
+                        const r = await corregirAManoIdentidad({ campo: 'patente', codigo: i, valor });
+                        if (!r.ok) { alert(r.motivo); break; }
+                    }
+                    cerrar(); await reabrir(); break;
+                }
                 case 'atendido':
                     internos.forEach(i => marcarAtendido(hallazgoId, i, 'revisado'));
                     cerrar(); renderDiagnostico(analisis, rawRecords); break;

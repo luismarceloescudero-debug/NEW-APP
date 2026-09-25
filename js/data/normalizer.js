@@ -354,7 +354,7 @@ function aUnaEdicion(a, b) {
  * prefijo TP ya es conocido — ver el filtro de esa función — así que quedaba aceptado en
  * silencio como gasto fuera de flota en vez de señalado).
  */
-const CODIGOS_CORREGIDOS = { GR01: 'GE01', TP0101: 'TP01' };
+const CODIGOS_CORREGIDOS = { TP0101: 'TP01' };
 
 export function corregirCodigoConocido(interno) {
     const clave = normalizeString(interno).replace(/[\s\-_]/g, '');

@@ -207,6 +207,13 @@
     .diag-lista li > .diag-val { flex: 1 1 0; }
 }
 
+/* Botones de una correccion automatica (Deshacer y, segun el tipo, Corregir a mano): un espacio de
+   ancho fijo, para que "Deshacer" caiga en la misma columna aunque una fila tenga un boton y otra dos. */
+.diag-acciones-fila { display: flex; gap: 0.4rem; align-items: center; }
+@media (min-width: 721px) {
+    .diag-acciones-fila { flex: 0 0 15.5rem; justify-content: flex-start; }
+}
+
 /* El hallazgo "normalizaciones" (diagnostico.js) reutiliza esta fila de equipo para listar
    párrafos completos (qué se corrigió y con qué función), no un valor corto tipo "762 h en
    ralentí". `white-space: nowrap` de la regla de arriba está pensado para eso último — acá,

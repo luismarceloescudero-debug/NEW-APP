@@ -119,7 +119,7 @@ Correrlo **antes de commitear** cualquier cosa en `js/data/` o `js/parsers/`. Lo
 | `npm run auditar` | ¿Cada número se puede re-derivar de su propia definición? | minutos |
 
 **`npm test` — la suite de unit tests (`tests/*.test.mjs`, node:test, sin dependencias).**
-273 casos sobre las funciones puras de `js/data/` y `js/parsers/`. No reemplaza a ningún arnés
+290 casos sobre las funciones puras de `js/data/` y `js/parsers/`. No reemplaza a ningún arnés
 y ninguno lo reemplaza a él: los arneses corren el pipeline entero sobre los Excel reales y
 contestan *"¿el total cambió?"*; los tests fijan el **contrato de cada función por separado** y
 contestan *"¿esta pieza sigue haciendo lo que dice que hace?"* — sin planillas, en segundos, y
@@ -295,7 +295,7 @@ cuesta horas si no se sabe.
 
 1. El servidor local no manda `Cache-Control`, así que el navegador se queda con los módulos de
    una corrida anterior.
-2. **Esta app es una PWA: el Service Worker (`sw.js`) tiene su propio caché** (`flotacontrol-v3`)
+2. **Esta app es una PWA: el Service Worker (`sw.js`) tiene su propio caché** (`flotacontrol-v4`)
    y **atiende el pedido antes de que llegue a la red**. Por eso `fetch(m, { cache: 'reload' })`
    —que alcanza en el repo hermano— **acá no sirve**: el pedido pasa igual por el SW y vuelve la
    versión vieja. Verificado el 23/09/2026: un fix ya aplicado en disco y ya medido por el arnés
@@ -424,14 +424,50 @@ En `js/data/normalizer.js`, aplicadas en el import por `js/parsers/xlsx-parser.j
 de `sugerirPosibleTypo()` —que solo sugiere, para que una persona confirme— estas ya están
 confirmadas contra el comprobante por HSV y se aplican directo:
 
-- **`GR01` → `GE01`**: es el caso real que motivó `sugerirPosibleTypo()` (un chofer tipeó GR01 en
-  vez de GE01 esa semana). Confirmado: deja de ser un hallazgo.
+- **`GR01` → `GE01`**: ya NO es una corrección fija (desde el 25/09/2026). Es el caso real que
+  motivó `sugerirPosibleTypo()`; ahora lo resuelve `resolucion-identidad.js` con evidencia (ver
+  "Resolución automática de identidad") y queda revertible.
 - **`TP0101` → `TP01`**: un cero de más. No lo agarraba `sugerirPosibleTypo()` porque el prefijo
   `TP` ya es conocido, así que quedaba aceptado en silencio como gasto fuera de flota.
 - **`CALOVENTOR` / `MANTENIMIENTO` / `SURTIDOR` → `CL02` / `CL03` / `CL04`**: no son un equipo
   rodante, son cargas del caloventor de una sede. HSV tiene uno por sede, así que el **lugar de
   carga de esa misma fila** resuelve cuál sin ambigüedad: Godoy Cruz → CL02, Tunuyán → CL03,
   San Martín → CL04.
+
+### Resolución automática de identidad (25/09/2026)
+
+`js/data/resolucion-identidad.js` (puro, con tests) decide y `autocorreccion.js` aplica, anota en
+`accionesAutomaticas` y **permite Deshacer**. Los registros guardan de dónde venían
+(`_alias_de`, `_dominio_original`), así que revertir es exacto. Tres reglas:
+
+- **Tipeo con evidencia**: el código está a una letra de un interno real, su prefijo no existe en la
+  flota Y comparte lugar de carga o centro de costo con él. Sin esa pista no se toca. Medido: GR01
+  → GE01 (ARIDOS / AMZA).
+- **Servicio de planta escrito con su nombre**: LIMPIEZA en Godoy Cruz → LM01, CALDERA en Tunuyán →
+  CA01 (`SERVICIO_POR_SEDE`). Hoy los datos ya traen el código, así que no dispara.
+- **Patente sin interno con centro de costo**: se acepta sola (`aceptado_no_flota`, revertible) si
+  TODAS sus cargas traen centro de costo, porque el gasto está imputado (decisión cerrada). Medido:
+  AH685WR, AG546OW, AC080QM, AG426HO y AG629TJ (PMZA/VMZA/GMZA). Sin centro de costo en alguna
+  carga sigue para revisión manual. El KPI "Equipos" ya no dice "N códigos sin padrón": dice
+  "por identificar" (con actividad y sin resolver) y "ya resueltos"; hoy 2 (PORTATIL y CF40, unidades
+  del GPS sin equipo) y 5.
+- **Un interno con dos patentes**: gana la del maestro; si no, la que duplica a la otra. Medido:
+  MX59 → ONK194 (23 filas), BM14 → GNG059 (6).
+
+**Corregir a mano** (`corregirAManoIdentidad()`): botón "Corregir a mano" en cada corrección
+automática de código o patente, "Corregir patente" en el hallazgo de patente doble y en su modal
+"Revisar y decidir" (que para ese hallazgo ofrece solo esa acción y "Marcar como revisado", no las
+13 de ralentí/metas/GPS). La persona ingresa el dato; si venía de una acción automática, esta se
+deshace primero y queda marcada para no reaplicarse. Lo manual también se puede deshacer. Las
+acciones ya deshechas **no se listan** como "aplicadas solas". Trampa encontrada al probarlo:
+`reabrir()` del modal usaba la copia de registros de cuando se abrió, así que tras corregir volvía
+a listar el hallazgo ya resuelto; ahora relee de `datosCrudos`.
+
+El hallazgo "N equipos del maestro no figuran en Cargas" se **quitó a propósito**: un equipo sin
+cargas no se analiza y no es un error (`totales.universo.fuera_principal` sigue existiendo).
+Verificado con `npm run verificar`: totales idénticos (678.429,5 L / 1.278.888,9 km / 83.189,2 hs).
+Cuidado: `CA`, `CL` y `LM` SÍ se dan de alta solos (están en las reglas de cálculo); la rama que
+acepta como "gasto de planta" un prefijo con nombre pero sin regla hoy no se dispara con estos datos.
 
 ### Un mes cubierto a medias no entra al ratio
 
@@ -551,7 +587,11 @@ vuelve a ser verdad. Verificado: 12.792 registros en la base después de recarga
 totales (678.429,5 L / 1.278.888,9 km). Para vaciar hay un botón dedicado, "Vaciar datos" (antes
 "Re-analizar", un nombre que no decía que borraba).
 
-**El Service Worker sirve JS y CSS primero desde caché: hay que subir `CACHE_VERSION` en cada
+**El Service Worker pide JS y CSS primero a la RED (desde el 25/09/2026) y usa el caché solo sin
+conexión.** Antes era caché primero y quien ya había visitado la app veía el JS/CSS viejo después de
+un deploy (fue exactamente lo que pasó con capturas de la app "desalineada" cuando el arreglo ya
+estaba desplegado). Con un SW viejo instalado hacen falta DOS recargas para pasar al nuevo; de ahí en
+más un deploy se ve en la siguiente carga. **Historia previa, ya no vale tal cual:** era caché primero y hay que subir `CACHE_VERSION` en cada
 release.** Estuvo en `flotacontrol-v2` desde la Fase 7 mientras el código seguía cambiando, así que
 quien ya había visitado la app **no volvía a bajar los archivos nuevos**: ninguno de los arreglos
 posteriores le llegaba. Dos tests lo protegen (`tests/configuracion.test.mjs`): que la versión no

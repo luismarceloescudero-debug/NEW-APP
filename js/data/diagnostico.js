@@ -1612,23 +1612,26 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
     const codigosQueAportan = new Set((totales.huerfanos || []).filter(huerfanoAporta)
         .map(h => normalizeEquipoKey(h.interno)));
     const accionesRecientes = (extra.accionesRecientes || []).filter(a =>
-        !a.revisado && a.tipo !== 'alta_interno' &&
+        !a.revisado && !a.deshecha && a.tipo !== 'alta_interno' &&
         !(a.tipo === 'aceptado_no_flota' && !codigosQueAportan.has(normalizeEquipoKey(a.codigo))));
     if (accionesRecientes.length) {
-        const porTipo = { alta_interno: [], aceptado_no_flota: [], meta_alineada: [] };
+        const porTipo = { alta_interno: [], aceptado_no_flota: [], meta_alineada: [], corregido_tipeo: [], corregido_servicio: [], patente_unificada: [] };
         accionesRecientes.forEach(a => { (porTipo[a.tipo] || (porTipo[a.tipo] = [])).push(a); });
         const partes = [];
         if (porTipo.aceptado_no_flota.length) partes.push(`${porTipo.aceptado_no_flota.length} código${porTipo.aceptado_no_flota.length === 1 ? '' : 's'} sin identificar aceptado${porTipo.aceptado_no_flota.length === 1 ? '' : 's'} como "así está bien"`);
+        const nIdent = porTipo.corregido_tipeo.length + porTipo.corregido_servicio.length;
+        if (nIdent) partes.push(`${nIdent} código${nIdent === 1 ? '' : 's'} mal escrito${nIdent === 1 ? '' : 's'} corregido${nIdent === 1 ? '' : 's'}`);
+        if (porTipo.patente_unificada.length) partes.push(`${porTipo.patente_unificada.length} patente${porTipo.patente_unificada.length === 1 ? '' : 's'} unificada${porTipo.patente_unificada.length === 1 ? '' : 's'}`);
         if (porTipo.meta_alineada.length) partes.push(`${porTipo.meta_alineada.length} meta${porTipo.meta_alineada.length === 1 ? '' : 's'} alineada${porTipo.meta_alineada.length === 1 ? '' : 's'} al consumo real`);
         hallazgos.push({
             id: 'acciones_automaticas', severidad: 'baja', icono: 'fa-robot', no_comparar: true,
             titulo: accionesRecientes.length === 1
                 ? `1 corrección se aplicó sola: ${partes.join(', ')}`
                 : `${accionesRecientes.length} correcciones se aplicaron solas: ${partes.join(', ')}`,
-            detalle: `El diagnóstico automático resuelve solo lo que no tiene ambigüedad — nunca adivina, solo actúa donde el siguiente paso es el único posible. <strong>Equipo nuevo dado de alta:</strong> el código tenía forma de interno válida y la app sabe calcularle algo, y no existía en el maestro. <strong>Aceptado "así está bien":</strong> el código no tiene forma de interno ni de patente, no hay más dato para resolverlo. <strong>Meta alineada:</strong> el equipo no tenía meta cargada, se usó su propio consumo real medido — se pisa sola en cuanto llegue el valor de fábrica real. <strong>Deshacer</strong> revierte exactamente esa acción (borra el alta, destilda el código, o vacía la meta) y no vuelve a aplicarse sola en la próxima sesión.`,
+            detalle: `El diagnóstico automático resuelve solo lo que no tiene ambigüedad — nunca adivina, solo actúa donde el siguiente paso es el único posible. <strong>Equipo nuevo dado de alta:</strong> el código tenía forma de interno válida y la app sabe calcularle algo, y no existía en el maestro. <strong>Aceptado "así está bien":</strong> el código no tiene forma de interno ni de patente, no hay más dato para resolverlo. <strong>Meta alineada:</strong> el equipo no tenía meta cargada, se usó su propio consumo real medido — se pisa sola en cuanto llegue el valor de fábrica real. <strong>Código corregido:</strong> estaba a una letra de un equipo real y compartía con él el lugar de carga o el centro de costo (o era un servicio de planta escrito con su nombre, resuelto por la sede). <strong>Patente unificada:</strong> un interno figuraba con dos patentes; ganó la del maestro o la claramente mayoritaria. <strong>Deshacer</strong> revierte exactamente esa acción (borra el alta, destilda el código, vacía la meta, o devuelve el código y la patente originales) y no vuelve a aplicarse sola en la próxima sesión.`,
             equipos: accionesRecientes.slice(0, 15).map(a => ({
                 interno: a.codigo, denominacion: '',
-                texto: a.tipo === 'alta_interno' ? 'equipo nuevo' : a.tipo === 'meta_alineada' ? 'meta alineada' : 'aceptado',
+                texto: { alta_interno: 'equipo nuevo', meta_alineada: 'meta alineada', corregido_tipeo: 'código corregido', corregido_servicio: 'código corregido', patente_unificada: 'patente unificada' }[a.tipo] || 'aceptado',
                 sub: `${a.motivo} ${a.detalle ? '· ' + a.detalle : ''} · ${new Date(a.fecha).toLocaleDateString('es-AR')}`,
                 accion_id: a.id, accion_tipo: a.tipo
             }))
@@ -2177,36 +2180,13 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
         });
     }
 
-    // ---------- 8a-bis. Equipos del maestro fuera de la planilla principal (Fase 7) ----------
-    // Regla del usuario: manda la planilla principal (por defecto Cargas) y solo se analiza lo
-    // que está cargado en ella. Los equipos del maestro que no figuran ahí salen de tarjetas y
-    // KPI — este hallazgo es lo que evita que eso pase en silencio. Primero los que SÍ tienen
-    // actividad GPS: un equipo que recorrió miles de km sin una sola carga casi seguro carga
-    // bajo otro código (patente sola, interno mal tipeado) o desde un tanque que no está en la
-    // planilla — medido en 2026: 46 equipos, 478.439 km.
+    // ---------- 8a-bis. Equipos del maestro fuera de la planilla principal ----------
+    // Sin hallazgo, a proposito. Manda la planilla principal (Cargas): un equipo que no tiene
+    // ninguna carga no se analiza, y no se le busca un registro parecido en otras planillas
+    // (mismo dia, mismo lugar, mismo periodo). No estar ahi no es un error que haya que
+    // marcar, es simplemente estar fuera del analisis. La lista sigue disponible en
+    // totales.universo.fuera_principal para quien la muestre (ver panel-generico.js).
     const universo = totales.universo || {};
-    const fueraPrincipal = universo.restringido ? (universo.fuera_principal || []) : [];
-    if (fueraPrincipal.length) {
-        const conGps = fueraPrincipal.filter(f => (f.gps || 0) > 0);
-        const kmFuera = conGps.reduce((s, f) => s + (f.km || 0), 0);
-        const nombrePrincipal = universo.principal === 'carga' ? 'Cargas de Combustible' : universo.principal;
-        hallazgos.push({
-            id: 'fuera_principal', severidad: conGps.length ? 'media' : 'baja', icono: 'fa-filter-circle-xmark',
-            no_comparar: true,
-            titulo: `${fueraPrincipal.length} equipo${fueraPrincipal.length === 1 ? '' : 's'} del maestro no figura${fueraPrincipal.length === 1 ? '' : 'n'} en ${nombrePrincipal}: no se analiza${fueraPrincipal.length === 1 ? '' : 'n'}` +
-                (conGps.length ? ` (${conGps.length} con GPS, ${fmt(kmFuera)} km)` : ''),
-            detalle: `Manda la planilla principal (<strong>${esc(nombrePrincipal)}</strong>): solo se analiza lo que está cargado en ella, identificado por <strong>interno + dominio</strong>. ` +
-                `Estos equipos están en el maestro pero no tienen ningún registro en esa planilla dentro del período, así que no aparecen en las tarjetas ni suman a los KPI. ` +
-                (conGps.length
-                    ? `<strong>Revisar primero los que tienen GPS</strong>: si recorrieron kilómetros y no tienen ninguna carga, lo más probable es que carguen bajo otro código (solo la patente, o un interno mal escrito) o desde un tanque propio que no figura en la planilla.`
-                    : 'Ninguno tiene actividad GPS en el período.'),
-            equipos: fueraPrincipal.slice(0, 30).map(f => ({
-                interno: f.interno, denominacion: f.identidad || f.denominacion || '',
-                texto: f.gps ? `${fmt(f.km)} km · ${fmt(f.horas, 1)} hs de GPS` : 'sin actividad en el período',
-                sub: `${f.denominacion || ''}${f.gps ? ' · sin ninguna carga: ¿carga con otro código?' : ''}`
-            }))
-        });
-    }
 
     // ---------- 8a-ter. Mismo interno con más de un dominio en la planilla principal ----------
     // La identidad es "INTERNO DOMINIO": si un interno aparece con dos patentes distintas, una
@@ -2230,7 +2210,8 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
             equipos: multiDominio.map(x => ({
                 interno: x.interno, denominacion: '',
                 texto: [...x.dominios.entries()].sort((a, b) => b[1] - a[1]).map(([d, n]) => `${d} (${n})`).join(' · '),
-                sub: 'patente (cantidad de filas con esa patente)'
+                sub: 'patente (cantidad de filas con esa patente)',
+                corregir_patente: true
             }))
         });
     }

@@ -572,6 +572,17 @@ export async function updateRawRecord(id, cambios) {
     });
 }
 
+/** Como updateRawRecord pero para varios registros en UNA transaccion: todos se cambian o ninguno. */
+export function updateRawRecords(lista = []) {
+    if (!lista.length) return Promise.resolve();
+    return writeTx(['raw_records'], ([store]) => {
+        lista.forEach(({ id, cambios }) => {
+            const req = store.get(id);
+            req.onsuccess = () => { if (req.result) store.put({ ...req.result, ...cambios }); };
+        });
+    });
+}
+
 /** Elimina un raw_record por su id autoincrement. */
 export function deleteRawRecord(id) {
     return writeTx(['raw_records'], ([store]) => { store.delete(id); });

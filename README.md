@@ -151,6 +151,9 @@ incluyendo cómo habilitar Ollama contra un sitio publicado, en `docs/DEPLOYMENT
 
 ## Estructura
 
+El mapa completo —flujo de datos, qué archivo es dueño de qué y qué tocar para cada cambio
+común— está en [`docs/mapa.md`](docs/mapa.md). Resumen:
+
 ```
 index.html               Página única (Carga de Datos + Panel de Flota)
 manifest.webmanifest     Metadatos de instalación (PWA)

@@ -7,6 +7,9 @@ Guía para Claude Code en este repositorio.
 > marcado como tal. No agregar afirmaciones sobre los datos sin correr los archivos: la regla del
 > proyecto es "si no se midió, no se afirma".
 
+> **Mapa del repo:** [`docs/mapa.md`](docs/mapa.md) — flujo de datos en Mermaid, qué archivo es
+> dueño de qué y recetas para los cambios comunes. Se actualiza en el mismo PR que cambie el flujo.
+
 ## Qué es esto, y en qué se diferencia del otro repo
 
 FlotaControl: panel de consumo de combustible de la flota de HSV Logística. Corre **100 % en el

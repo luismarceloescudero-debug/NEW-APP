@@ -11,9 +11,9 @@ import assert from 'node:assert/strict';
 import { normalizeEquipoKey } from '../js/data/normalizer.js';
 import { proponerTipeo, servicioPorLugar, elegirPatente } from '../js/data/resolucion-identidad.js';
 
-const carga = (interno, lugar, centro) => ({
+const carga = (interno, lugar, centro, extra = {}) => ({
     type: 'carga', interno, interno_key: normalizeEquipoKey(interno),
-    lugar_carga: lugar, centro_costo: centro
+    lugar_carga: lugar, centro_costo: centro, ...extra
 });
 const maestro = [{ interno: 'GE01' }, { interno: 'GE02' }, { interno: 'TR20' }];
 
@@ -114,4 +114,45 @@ test('si el maestro declara una patente que ninguna fila trae, se decide por may
 
 test('una sola patente no hay nada que elegir', () => {
     assert.equal(elegirPatente(new Map([['ONK194', 65]])), null);
+});
+
+// --- los otros datos que acompañan al registro (chofer, combustible) -------------------------
+
+test('el chofer compartido alcanza como pista: maneja unos pocos equipos', () => {
+    const suyas = [carga('GR01', 'TUNUYAN', 'PTY', { chofer: 'PEREZ' })];
+    const todas = [...suyas, carga('GE01', 'ARIDOS', 'AMZA', { chofer: 'PEREZ' })];
+    const r = proponerTipeo('GR01', suyas, todas, maestro);
+    assert.equal(r.destino, 'GE01');
+    assert.match(r.evidencia, /mismo chofer \(PEREZ\)/);
+    assert.deepEqual(r.pistas, ['chofer']);
+});
+
+test('el combustible NO alcanza solo: casi toda la flota carga el mismo', () => {
+    // Es la regresion que protege de que sumar campos afloje la regla. Sin este limite, cualquier
+    // codigo a una letra de otro se corregiria solo por compartir GASOIL, y los litros se moverian
+    // de equipo sin que nadie lo note.
+    const suyas = [carga('GR01', 'TUNUYAN', 'PTY', { combustible: 'GASOIL' })];
+    const todas = [...suyas, carga('GE01', 'ARIDOS', 'AMZA', { combustible: 'GASOIL' })];
+    assert.equal(proponerTipeo('GR01', suyas, todas, maestro), null);
+});
+
+test('el combustible SI suma a la evidencia cuando ya hay una pista fuerte', () => {
+    const suyas = [carga('GR01', 'ARIDOS', 'PTY', { combustible: 'GASOIL' })];
+    const todas = [...suyas, carga('GE01', 'ARIDOS', 'AMZA', { combustible: 'GASOIL' })];
+    const r = proponerTipeo('GR01', suyas, todas, maestro);
+    assert.deepEqual(r.pistas, ['lugar_carga', 'combustible']);
+    assert.match(r.evidencia, /lugar de carga.*combustible/);
+});
+
+test('las cuatro pistas juntas se redactan en orden y sin repetir', () => {
+    const extra = { chofer: 'PEREZ', combustible: 'GASOIL' };
+    const suyas = [carga('GR01', 'ARIDOS', 'AMZA', extra)];
+    const todas = [...suyas, carga('GE01', 'ARIDOS', 'AMZA', extra)];
+    const r = proponerTipeo('GR01', suyas, todas, maestro);
+    assert.deepEqual(r.pistas, ['lugar_carga', 'centro_costo', 'chofer', 'combustible']);
+});
+
+test('un candidato sin ninguna carga propia no se puede comparar con nada', () => {
+    const suyas = [carga('GR01', 'ARIDOS', 'AMZA')];
+    assert.equal(proponerTipeo('GR01', suyas, suyas, maestro), null);
 });

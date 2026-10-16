@@ -13,7 +13,7 @@
  * vieja en caché bajen la nueva la próxima vez que abran la app con internet (`activate`
  * borra los caches de versiones anteriores).
  */
-const CACHE_VERSION = 'flotacontrol-v6';
+const CACHE_VERSION = 'flotacontrol-v13';
 
 const PRECACHE = [
     './',
@@ -39,6 +39,9 @@ const PRECACHE = [
     './js/data/alcance.js',
     './js/data/resolucion-identidad.js',
     './js/data/planta.js',
+    './js/data/estados-equipo.js',
+    './js/data/revision-consumo.js',
+    './js/data/cargas-imposibles.js',
     './js/data/analyzer.js',
     './js/data/autocorreccion.js',
     './js/data/database.js',
@@ -50,13 +53,13 @@ const PRECACHE = [
     './js/parsers/xlsx-parser.js',
     './js/ui/aviso.js',
     './js/ui/backup.js',
+    './js/ui/estados.js',
     './js/ui/calcpopover.js',
     './js/ui/comparativa.js',
     './js/ui/config.js',
     './js/ui/datatable.js',
     './js/ui/metas.js',
     './js/ui/modals.js',
-    './js/ui/mapeo.js',
     './js/ui/panel-generico.js',
     './js/ui/panel.js',
     './js/ui/seguimiento.js',

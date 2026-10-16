@@ -10,7 +10,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-    parseNumber, parseDate, parseHoraDeFecha, parseDuration, parseExcelHours,
+    parseNumber, parseDate, parseHoraDeFecha, parseDuration, parseExcelHours, sedeDeLugarCarga,
     aggregateHours, parseConsumoEstimado, partesFecha, formatFechaAR, normalizeString
 } from '../js/data/normalizer.js';
 
@@ -130,6 +130,25 @@ test('parseDuration suma los dias enteros del Resumen de Flota multi-mes', () =>
     assert.equal(parseDuration('2 dias 4:15:00'), 2 * 24 + 4.25);
 });
 
+test('parseDuration lee "dias" CON tilde igual que sin tilde', () => {
+    // El caso que el test de arriba no cubria, y que fallaba: con la alternancia probando `d`
+    // sola primero, "2 dias" (sin tilde) backtrackeaba bien porque la "i" es caracter de palabra
+    // y el \b fallaba, pero "2 dias" CON tilde cortaba en la "d" —la "i" acentuada no es \w, asi
+    // que el \b daba por valido el corte— y quedaba "ias 4:15:00" = 0 h 15 min.
+    // Resultado: 48,25 hs en vez de 52,25. Sin error, con una cifra plausible.
+    assert.equal(parseDuration('2 días 4:15:00'), 2 * 24 + 4.25);
+    assert.equal(parseDuration('1 día 5:00:00'), 29);
+    // La forma abreviada de una letra tiene que seguir funcionando.
+    assert.equal(parseDuration('2 d 4:15:00'), 2 * 24 + 4.25);
+});
+
+test('parseDuration aguanta la escala de un reporte anual', () => {
+    // Es el formato que devuelve Wara cuando se pide un periodo completo en vez de mes a mes:
+    // un solo registro por equipo con el total del anio.
+    assert.equal(parseDuration('365 days, 0:00:00'), 8760);
+    assert.equal(parseDuration('120 days, 5:00:00'), 120 * 24 + 5);
+});
+
 test('parseDuration devuelve 0 ante vacio', () => {
     for (const v of ['', null, undefined, 0]) assert.equal(parseDuration(v), 0);
 });
@@ -223,4 +242,42 @@ test('normalizeString sube a mayusculas y saca acentos, para poder comparar clav
 
 test('normalizeString devuelve string vacio ante nulos, nunca "NULL" ni "undefined"', () => {
     for (const v of [null, undefined, '']) assert.equal(normalizeString(v), '');
+});
+
+// --- sedeDeLugarCarga: la columna del lugar no es una localidad ------------------------------
+
+test('las variantes de Godoy Cruz colapsan en una sola sede', () => {
+    // Medido sobre los archivos reales: en 2024/2025 el lugar era solo "GC" y ARIDOS / GRIS /
+    // EE SS CORONEL DIAZ vivian en OBSERVACION; en 2026 subieron a la columna del lugar.
+    for (const l of ['GC', 'GODOY CRUZ', 'GNC GODOY CRUZ', 'GRIS', 'ARIDOS', 'EE SS CORONEL DIAZ', 'EE.SS. CORONEL DIAZ']) {
+        assert.equal(sedeDeLugarCarga(l), 'GODOY CRUZ', l);
+    }
+});
+
+test('Tunuyan y San Martin reconocen su codigo viejo', () => {
+    assert.equal(sedeDeLugarCarga('TYAN'), 'TUNUYAN');
+    assert.equal(sedeDeLugarCarga('TUNUYAN'), 'TUNUYAN');
+    assert.equal(sedeDeLugarCarga('ALTAMIRA'), 'TUNUYAN');
+    assert.equal(sedeDeLugarCarga('SM'), 'SAN MARTIN');
+    assert.equal(sedeDeLugarCarga('SAN MARTIN'), 'SAN MARTIN');
+});
+
+test('la caja y los espacios no cambian la sede', () => {
+    assert.equal(sedeDeLugarCarga('  godoy cruz '), 'GODOY CRUZ');
+    assert.equal(sedeDeLugarCarga('gris'), 'GODOY CRUZ');
+});
+
+test('un lugar que no esta en la tabla es su propia sede, no se agrupa de mas', () => {
+    // La opcion conservadora: agrupar un lugar nuevo dentro de una sede existente podria
+    // esconder un recorrido imposible. Hasta que alguien lo asigne, es su propia localidad.
+    assert.equal(sedeDeLugarCarga('LUGAR NUEVO'), 'LUGAR NUEVO');
+    assert.equal(sedeDeLugarCarga(''), '');
+    assert.equal(sedeDeLugarCarga(null), '');
+});
+
+test('"SM" y "GC" solo matchean exacto, no por estar contenidos', () => {
+    // Si matchearan por "contiene", cualquier lugar con esas dos letras caeria en la sede
+    // equivocada: "SMATA", "AGC", "ESMERALDA".
+    assert.equal(sedeDeLugarCarga('SMATA'), 'SMATA');
+    assert.equal(sedeDeLugarCarga('AGC'), 'AGC');
 });

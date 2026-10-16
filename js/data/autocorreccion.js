@@ -21,13 +21,14 @@
  */
 import { normalizeEquipoKey, normalizeString, clasificarIdentificador, getPrefijo, sugerirPosibleTypo, TIPO_POR_PREFIJO } from './normalizer.js';
 import { proponerTipeo, servicioPorLugar, elegirPatente, SERVICIO_POR_SEDE } from './resolucion-identidad.js';
-import { esServicioPlanta, inferirEstadoPlanta } from './planta.js';
+import { esServicioPlanta, inferirEstadoPlanta, inferirTemporadaBajaAridos } from './planta.js';
 import {
     upsertEquipos, setNoFlotaAceptado, quitarNoFlotaAceptado, updateEquipo, deleteEquipo,
     registrarEdicion, registrarAccionAutomatica, marcarAccionDeshecha, getAllEquipos,
-    updateRawRecords, getAllRawRecords, getSeguimientoEquipos, setSeguimientoAutomatico, quitarSeguimientoEquipo
+    updateRawRecords, getAllRawRecords, getSeguimientoEquipos, setSeguimientoAutomatico, quitarSeguimientoEquipo,
+    deleteRawRecord, saveCorreccionCarga, deleteCorreccionCarga, huellaCarga, insertRawRecords
 } from './database.js';
-import { metaDesdeConsumoReal } from './diagnostico.js';
+import { metaDesdeConsumoReal, utilizacion, auditarCalidadCargas } from './diagnostico.js';
 import { RULE_L_100KM, RULE_L_HORA, RULE_NO_TANK } from './analyzer.js';
 
 // Prefijos que la app sabe calcular (tienen una regla de L/100km, L/hora, o "sin tanque"
@@ -50,7 +51,7 @@ const PREFIJOS_CALCULABLES = new Set([...RULE_L_100KM, ...RULE_L_HORA, ...RULE_N
  * @returns {{altas: number, aceptados: number, metas: number}}
  */
 export async function aplicarCorreccionesAutomaticas({ equipos = [], huerfanos = [], filas = [], codigosAceptados = new Set(), accionesPrevias = [], periodo = null, rawRecords = [] }) {
-    const resultado = { altas: 0, aceptados: 0, metas: 0, identidad: 0 };
+    const resultado = { altas: 0, aceptados: 0, metas: 0, identidad: 0, duplicados: 0 };
     const internosExistentes = new Set(equipos.map(e => normalizeEquipoKey(e.interno)));
     // Una acción deshecha a mano NO se vuelve a aplicar aunque las condiciones que la
     // dispararon sigan iguales — si no, "Deshacer" no duraría ni hasta el próximo render.
@@ -89,8 +90,10 @@ export async function aplicarCorreccionesAutomaticas({ equipos = [], huerfanos =
             }
         }
 
-        // Tipeo de un interno real, con evidencia (mismo lugar de carga o centro de costo).
-        // Antes se dejaba siempre para revisión manual; sin la pista extra sigue igual.
+        // Tipeo de un interno real, con evidencia en los datos que acompañan a la carga: lugar
+        // de carga, centro de costo o chofer (el combustible suma pero no alcanza solo — ver
+        // CAMPOS_PISTA en resolucion-identidad.js). Sin ninguna pista fuerte sigue yendo a
+        // revisión manual, que es como se comportaba antes de tener evidencia.
         const claveCodigo = normalizeEquipoKey(h.interno);
         const tipeo = proponerTipeo(h.interno, rawRecords.filter(r => r.type === 'carga' && r.interno_key === claveCodigo),
             rawRecords.filter(r => r.type === 'carga'), equipos);
@@ -206,6 +209,22 @@ export async function aplicarCorreccionesAutomaticas({ equipos = [], huerfanos =
             });
             resultado.identidad++;
         }
+
+        // Equipos de ARIDOS con consumo/uso bajo: temporada baja de inmediato, sin esperar a que
+        // alguien lo marque. Mismo cuidado: no pisa un estado anotado y se puede deshacer.
+        for (const f of filas) {
+            const interno = f.equipo.interno;
+            if (esServicioPlanta(interno) || yaAnotados.has(interno) || deshechas.has(`estado_planta|${interno}`)) continue;
+            const est = inferirTemporadaBajaAridos({ cargas: f.cargas || [], periodo, utilizacion: utilizacion(f, periodo) });
+            if (!est) continue;
+            await setSeguimientoAutomatico(interno, est.motivo, est.categoria, est.rangos);
+            await registrarAccionAutomatica({
+                tipo: 'estado_planta', codigo: interno,
+                motivo: est.motivo,
+                detalle: est.bajoUso ? 'uso bajo en ARIDOS' : `${est.mesesSinCarga.length} mes${est.mesesSinCarga.length === 1 ? '' : 'es'} sin cargas en ARIDOS`
+            });
+            resultado.identidad++;
+        }
     }
 
     const maestroPorInterno = new Map(equipos.map(e => [e.interno, e]));
@@ -243,6 +262,40 @@ export async function aplicarCorreccionesAutomaticas({ equipos = [], huerfanos =
             detalle: `${eq.meta_texto} · ${sug.base}`
         });
         resultado.metas++;
+    }
+
+    // ---------- Duplicados exactos: se descartan solos ----------
+    // Antes quedaban marcados y visibles, apartados del cálculo, esperando que alguien apretara
+    // "Corregir duplicados exactos". A esta altura eso es ruido: una fila idéntica hasta el
+    // centavo, el litro, el lugar y el chofer no es una carga real repetida, es la misma entrada
+    // dos veces, y no hay una segunda lectura posible. Así que se descarta la copia y lo que
+    // queda es el histórico, con Deshacer (ver el hallazgo "se aplicó sola").
+    //
+    // Se descarta la COPIA y se conserva la original. La corrección persistente va por huella con
+    // accion 'dedupe' + conservar: 1, NO 'eliminar': las dos filas del par comparten huella, así
+    // que un 'eliminar' saltearía las dos al reimportar y se perdería también la carga buena.
+    //
+    // El snapshot entero de la fila viaja en la acción porque sin él "Deshacer" no podría
+    // restituirla: a diferencia del resto de las correcciones, esta borra un registro.
+    for (const d of (auditarCalidadCargas(rawRecords).duplicadosExactos || [])) {
+        const huella = huellaCarga(d.repetida);
+        if (deshechas.has(`dedupe_exacto|${huella}`)) continue;
+        const { id, ...snapshot } = d.repetida;
+        await deleteRawRecord(id);
+        await saveCorreccionCarga({
+            huella, accion: 'dedupe', conservar: 1,
+            interno_original: (d.repetida._interno_original ?? d.repetida.interno) || '',
+            fecha: d.repetida.fecha, litros: d.repetida.litros, importe: d.repetida.importe,
+            nota: 'duplicado exacto: se conserva una y se descarta la copia'
+        });
+        await registrarAccionAutomatica({
+            tipo: 'dedupe_exacto', codigo: huella,
+            motivo: `Carga repetida idéntica en todos los campos (${d.repetida.interno || d.repetida.dominio || 'sin equipo'}, ${d.repetida.fecha}, ${d.repetida.litros} L): se conservó una y se descartó la copia.`,
+            detalle: `${d.repetida.litros} L` + ((parseFloat(d.repetida.importe) || 0) > 0 ? ` · $${d.repetida.importe}` : '') +
+                (d.repetida.lugar_carga ? ` · ${d.repetida.lugar_carga}` : ''),
+            snapshot
+        });
+        resultado.duplicados++;
     }
 
     return resultado;
@@ -312,6 +365,18 @@ export async function deshacerAccionAutomatica(accion) {
         const actual = (await getSeguimientoEquipos()).find(s => s.interno === codigo);
         if (actual && actual.auto) { await quitarSeguimientoEquipo(codigo); revertido = true; motivo = 'Estado asumido quitado.'; }
         else motivo = 'El estado ya lo corrigió una persona: se conserva, y la acción queda como deshecha.';
+    } else if (tipo === 'dedupe_exacto') {
+        // La unica accion automatica que BORRA un registro, asi que deshacerla lo restituye desde
+        // el snapshot guardado y saca la correccion persistente, o la copia volveria a caer en la
+        // proxima reimportacion. La fila vuelve a entrar marcada como duplicada (lo es), pero ya
+        // no se la descarta sola: la accion queda como deshecha.
+        await deleteCorreccionCarga(codigo).catch(() => {});
+        if (accion.snapshot) {
+            await insertRawRecords([accion.snapshot]);
+            revertido = true; motivo = 'La carga descartada vuelve a estar en la base.';
+        } else {
+            motivo = 'Esta accion no guardo el detalle de la fila, asi que no se puede restituir.';
+        }
     } else if (tipo === 'meta_alineada') {
         const actual = (await getAllEquipos()).find(e => e.interno === codigo);
         if (!actual) { motivo = 'El equipo ya no existe en el maestro.'; }

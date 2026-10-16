@@ -9,7 +9,8 @@
  *  - xlsx-parser.js → inspeccionarArchivo(): cuando un archivo no coincide exacto con un
  *    formato conocido, puntúa contra cada esquema para sugerir de qué tipo es y qué columna
  *    corresponde a cada campo, en vez de importarlo en silencio como "otra planilla".
- *  - ui/mapeo.js → la vista previa, que muestra esa sugerencia y deja corregirla.
+ *    (La vista previa de columnas que mostraba esa sugerencia se eliminó: lo que no se
+ *    reconoce entra por el importador genérico, o por un mapeo recordado de antes.)
  *
  * Las claves de `campos` son EXACTAMENTE las que ya usan los importadores de xlsx-parser.js
  * en val(row, 'campo', ...): un mapeo {campo: 'ENCABEZADO'} confirmado acá se pasa tal cual
@@ -22,6 +23,13 @@ import { normalizeString, parseNumber } from '../data/normalizer.js';
 // columna "INTERNO-DOMINIO" de Cargas ("TR21 AD291BF").
 const IDENTIDAD_INTERNO = ['INTERNO-DOMINIO', 'INTERNO DOMINIO', 'INTERNO', 'NRO INTERNO', 'N INTERNO', 'NUMERO INTERNO', 'MOVIL', 'UNIDAD', 'EQUIPO', 'CODIGO EQUIPO', 'COD EQUIPO'];
 const IDENTIDAD_DOMINIO = ['DOMINIO', 'PATENTE', 'MATRICULA', 'CHAPA'];
+
+/**
+ * Cómo se llama la columna del lugar en las planillas de combustible de años anteriores.
+ * "PLANTA DE CERGA" está con el typo a propósito: así viene en dos de las tres hojas del
+ * archivo 2025 y es lo que hay que reconocer, no lo que debería decir.
+ */
+export const PLANTA_HISTORICA = ['PLANTA DE CARGA', 'PLANTA DE CERGA', 'PTA CARGA', 'PTA DE CARGA', 'PLANTA CARGA'];
 
 export const ESQUEMAS = {
     EQUIPOS: {
@@ -67,6 +75,38 @@ export const ESQUEMAS = {
             chofer:       { etiqueta: 'Chofer', sinonimos: ['CHOFER', 'CONDUCTOR', 'OPERADOR'] },
             sector:       { etiqueta: 'Sector', sinonimos: ['SECTOR'] },
             centro_costo: { etiqueta: 'Centro de costo', sinonimos: ['CENTRO DE COSTO', 'C. COSTO', 'CC', 'CENTRO COSTO'] }
+        }
+    },
+    // Las planillas de combustible de años anteriores (2024, 2025). Es el MISMO dato que CARGAS
+    // —fecha, equipo, litros, chofer, sector— pero en el formato viejo, y con tres diferencias
+    // que obligan a tratarlas aparte en vez de sumarlas al período corriente:
+    //
+    //   1. **No traen plata**: ni precio unitario ni importe. Si entraran como cargas normales,
+    //      el KPI de costo sumaría ~20.000 filas en cero y el hallazgo "cargas sin valorizar"
+    //      las reportaría como error para siempre.
+    //   2. **No hay GPS de esos años**, así que no tienen denominador de actividad: se puede
+    //      medir cuántos litros gastó un equipo, no su consumo.
+    //   3. Entrarían al período analizado y lo estirarían a 2024–2026, con lo que toda razón de
+    //      la app pasaría a mezclar años.
+    //
+    // Se importan marcadas `solo_historico` y quedan fuera del cálculo corriente (igual que
+    // `solo_comparativa` para los Resumen de viaje), disponibles como referencia histórica.
+    //
+    // La columna del lugar es lo que distingue al formato: el viejo dice "PLANTA DE CARGA"
+    // (o "PLANTA DE CERGA", con el typo tal cual viene en dos de las tres hojas del 2025, o
+    // "Pta Carga" en el 2024) y el corriente dice "LUGAR DE CARGA".
+    CARGAS_HISTORICAS: {
+        etiqueta: 'Cargas de Combustible (histórico)',
+        campos: {
+            interno:      { etiqueta: 'Interno (o interno + dominio)', sinonimos: IDENTIDAD_INTERNO, requerido: true, identidad: true },
+            dominio:      { etiqueta: 'Dominio / patente', sinonimos: IDENTIDAD_DOMINIO, identidad: true },
+            fecha:        { etiqueta: 'Fecha', sinonimos: ['FECHA', 'DATE', 'FECHA DE CARGA'], requerido: true, formato: 'fecha' },
+            litros:       { etiqueta: 'Litros', sinonimos: ['LITROS', 'LTS', 'LT'], requerido: true, formato: 'numero' },
+            lugar:        { etiqueta: 'Planta de carga', sinonimos: PLANTA_HISTORICA, requerido: true },
+            chofer:       { etiqueta: 'Chofer', sinonimos: ['CHOFER', 'CONDUCTOR', 'OPERADOR'] },
+            sector:       { etiqueta: 'Sector', sinonimos: ['SECTOR'] },
+            observacion:  { etiqueta: 'Observación', sinonimos: ['OBSERVACION', 'OBSERVACIONES'] },
+            centro_costo: { etiqueta: 'Centro de costo', sinonimos: ['CENTRO DE COSTO', 'C. COSTO', 'CENTRO COSTO'] }
         }
     },
     GPS: {

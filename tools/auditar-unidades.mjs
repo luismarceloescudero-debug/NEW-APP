@@ -111,13 +111,23 @@ console.log = logReal;
 
 const recs = await getAllRawRecords();
 const equipos = await getAllEquipos();
-const cargas = recs.filter(r => r.type === 'carga');
+// Las cargas históricas (2024/2025) quedan afuera: este arnés audita el contrato de unidades de
+// los datos que alimentan los números publicados, y esas filas no alimentan ninguno (ver
+// CARGAS_HISTORICAS en js/parsers/esquemas.js — entran marcadas `solo_historico` y el analyzer
+// las excluye). Incluirlas hacía fallar el chequeo de importe por 13.215 filas sin valor, que no
+// es un error de formato: esas planillas no traen plata, y grabar ceros sería peor.
+const cargas = recs.filter(r => r.type === 'carga' && !r.solo_historico);
+const historicas = recs.filter(r => r.type === 'carga' && r.solo_historico);
 const gps = recs.filter(r => r.type === 'gps');
 const entregas = recs.filter(r => r.type === 'entrega');
 
 console.log(`\n=== AUDITORIA DE UNIDADES Y FORMATOS ===`);
 console.log(`Archivos: ${ARCHIVOS}`);
-console.log(`Cargas: ${cargas.length} · GPS: ${gps.length} · Entregas: ${entregas.length} · Maestro: ${equipos.length}\n`);
+console.log(`Cargas: ${cargas.length} · GPS: ${gps.length} · Entregas: ${entregas.length} · Maestro: ${equipos.length}`);
+// Se declaran aunque no se auditen: que el número esté a la vista es lo que impide que mañana
+// alguien lea "Cargas: 5.071" y crea que el histórico no se importó.
+if (historicas.length) console.log(`Cargas históricas (fuera de esta auditoría y del cálculo): ${historicas.length}`);
+console.log('');
 
 // ---------------------------------------------------------------- 2. formato de cada campo
 /**

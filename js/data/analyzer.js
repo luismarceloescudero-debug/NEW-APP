@@ -850,7 +850,13 @@ export function analizarFlota({ equipos = [], rawRecords = [], estimados = [], f
         vistasComparativa.add(k);
         return true;
     });
-    const utiles = rawRecords.filter(r => !registroExcluido(r) && !r?.solo_comparativa);
+    // Cargas de años anteriores (2024, 2025): son el mismo dato que las cargas, en el formato
+    // viejo, pero sin precio ni importe y sin GPS de su año. Quedan guardadas y consultables
+    // como referencia histórica, y FUERA del cálculo: si entraran, estirarían el período a
+    // 2024-2026 —toda razón de la app pasaría a mezclar años— y sumarían ~20.000 filas en cero
+    // al KPI de costo. Ver CARGAS_HISTORICAS en parsers/esquemas.js.
+    const historicas = rawRecords.filter(r => r?.solo_historico && !registroVacio(r));
+    const utiles = rawRecords.filter(r => !registroExcluido(r) && !r?.solo_comparativa && !r?.solo_historico);
     const allCargas = utiles.filter(r => r.type === 'carga');
     const allGps = utiles.filter(r => r.type === 'gps');
     const allOtros = utiles.filter(r => r.type !== 'carga' && r.type !== 'gps');
@@ -1195,7 +1201,7 @@ export function analizarFlota({ equipos = [], rawRecords = [], estimados = [], f
         ]
     };
 
-    return { filas, totales, movimientosOtros: otros, comparativas };
+    return { filas, totales, movimientosOtros: otros, comparativas, historicas };
 }
 
 function rangoTxt(recs) {

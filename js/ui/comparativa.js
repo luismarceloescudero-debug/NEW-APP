@@ -40,9 +40,7 @@ const METRICAS = [
     { key: 'dias_entrega_loop', label: 'Días con entregas Loop', unidad: 'días', dec: 0, get: f => f.metrics.operacion_loop?.dias_entrega || 0, mejorEsMenor: null },
     { key: 'volumen_loop', label: 'Volumen entregado Loop', unidad: 'm³', dec: 1, get: f => f.metrics.operacion_loop?.volumen_m3 || 0, mejorEsMenor: null },
     { key: 'km', label: 'Kilómetros', unidad: 'km', dec: 0, get: f => f.metrics.total_km > 0 ? f.metrics.total_km : null, mejorEsMenor: null },
-    { key: 'horas', label: 'Horas totales (GPS)', unidad: 'hs', dec: 1, get: f => f.metrics.total_horas > 0 ? f.metrics.total_horas : null, mejorEsMenor: null },
-    { key: 'ralenti', label: 'Horas en ralentí', unidad: 'hs', dec: 1, get: f => f.metrics.horas_ralenti, mejorEsMenor: true },
-    { key: 'ralenti_pct', esTasa: true, label: '% del tiempo en ralentí', unidad: '%', dec: 0, get: f => f.metrics.total_horas > 0 ? (f.metrics.horas_ralenti / f.metrics.total_horas * 100) : null, mejorEsMenor: true },
+    { key: 'horas', label: 'Horas totales (movimiento + ralentí)', unidad: 'hs', dec: 1, get: f => f.metrics.total_horas > 0 ? f.metrics.total_horas : null, mejorEsMenor: null },
     { key: 'consumo', esTasa: true, label: 'Consumo real', unidad: '', dec: 2, sufijo: f => f.metrics.tipo_calculo, get: f => f.metrics.consumo_real > 0 ? f.metrics.consumo_real : null, mejorEsMenor: true, unidadDe: f => f.metrics.tipo_calculo },
     { key: 'meta', label: 'Meta', unidad: '', dec: 2, get: f => f.confirmed && f.confirmed.valor > 0 ? f.confirmed.valor : null, mejorEsMenor: null, unidadDe: f => f.metrics.tipo_calculo },
     { key: 'desvio', esTasa: true, label: 'Desvío vs meta', unidad: '%', dec: 1, signo: true, get: f => f.metrics.desvio_pct, mejorEsMenor: true }
@@ -76,8 +74,6 @@ const METRICAS_NORMALIZADAS = [
       get: (f, c) => c.mesesConDatos > 0 ? f.metrics.cantidad_cargas / c.mesesConDatos : null },
     { key: 'volumen_dia_loop', esTasa: true, label: 'm³ Loop por día con entrega', unidad: 'm³', dec: 1, mejorEsMenor: null,
       get: (f, c) => c.loop?.dias_entrega > 0 ? c.loop.volumen_m3 / c.loop.dias_entrega : null },
-    { key: 'ralenti_pct', esTasa: true, label: '% del tiempo en ralentí', unidad: '%', dec: 0, mejorEsMenor: true,
-      get: f => f.metrics.total_horas > 0 ? (f.metrics.horas_ralenti / f.metrics.total_horas * 100) : null },
     { key: 'consumo', esTasa: true, label: 'Consumo real', unidad: '', dec: 2, mejorEsMenor: true,
       sufijo: f => f.metrics.tipo_calculo, unidadDe: f => f.metrics.tipo_calculo,
       get: f => f.metrics.consumo_real > 0 ? f.metrics.consumo_real : null },
@@ -131,7 +127,7 @@ function contextoDe(fila) {
 const RESUMEN_ITEMS = [
     { label: 'cargas', unidad: '', dec: 0, verbo: 'hizo', get: f => f.metrics.cantidad_cargas },
     { label: 'litros cargados', unidad: 'L', dec: 0, verbo: 'cargó', get: f => f.metrics.total_litros },
-    { label: 'horas de ralentí', unidad: 'hs', dec: 0, verbo: 'acumuló', get: f => f.metrics.horas_ralenti },
+    { label: 'horas de uso (movimiento + ralentí)', unidad: 'hs', dec: 0, verbo: 'acumuló', get: f => f.metrics.total_horas },
     { label: 'costo de combustible', unidad: '', dec: 0, money: true, verbo: 'gastó', get: f => f.metrics.total_costo },
     { label: 'consumo real', unidad: '', dec: 2, verbo: 'consumió', sufijo: f => ` ${f.metrics.tipo_calculo}`, get: f => f.metrics.consumo_real > 0 ? f.metrics.consumo_real : null, unidadDe: f => f.metrics.tipo_calculo }
 ];

@@ -5,7 +5,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { esServicioPlanta, cargaEnAridos, inferirEstadoPlanta, paresComparables } from '../js/data/planta.js';
+import { esServicioPlanta, cargaEnAridos, inferirEstadoPlanta, inferirTemporadaBajaAridos, paresComparables } from '../js/data/planta.js';
 
 const periodo = { desde: '2026-01-01', hasta: '2026-08-31' };
 const carga = (fecha, lugar = 'GRIS', sector = '') => ({ fecha, lugar_carga: lugar, sector });
@@ -122,4 +122,46 @@ test('las marcas se comparan sin importar mayusculas ni espacios', () => {
 test('dos campos vacios no cuentan como coincidencia', () => {
     const r = paresComparables(eq('CL02'), [eq('CL03')]);
     assert.deepEqual(r[0].coincide, []);
+});
+
+// --- temporada baja inmediata en ARIDOS (cualquier tipo de equipo) ----------------------------
+
+const uso = (estado) => ({ estado, hsPorDia: 2.5, esperadoTexto: '8-10', desde: '2026-01-01', hasta: '2026-08-31' });
+const todosLosMeses = ['01', '02', '03', '04', '05', '06', '07', '08'].map(m => carga(`2026-${m}-10`, 'ARIDOS'));
+
+test('ARIDOS con uso bajo: temporada baja de todo el tramo medido', () => {
+    const r = inferirTemporadaBajaAridos({ cargas: todosLosMeses, periodo, utilizacion: uso('baja') });
+    assert.equal(r.categoria, 'temporada_baja');
+    assert.equal(r.bajoUso, true);
+    assert.deepEqual(r.rangos, [{ desde: '2026-01-01', hasta: '2026-08-31', categoria: 'temporada_baja' }]);
+    assert.match(r.motivo, /uso bajo/);
+});
+
+test('ARIDOS con uso muy bajo tambien se marca', () => {
+    assert.equal(inferirTemporadaBajaAridos({ cargas: todosLosMeses, periodo, utilizacion: uso('muy_baja') }).bajoUso, true);
+});
+
+test('ARIDOS con uso normal y todos los meses con carga: no hay nada que marcar', () => {
+    assert.equal(inferirTemporadaBajaAridos({ cargas: todosLosMeses, periodo, utilizacion: uso('normal') }), null);
+});
+
+test('fuera de ARIDOS un uso bajo no se marca solo', () => {
+    const cargas = ['01', '02', '03'].map(m => carga(`2026-${m}-10`, 'TUNUYAN'));
+    assert.equal(inferirTemporadaBajaAridos({ cargas, periodo, utilizacion: uso('muy_baja') }), null);
+});
+
+test('ARIDOS con meses sin cargas y sin dato de uso: temporada baja en esos meses', () => {
+    const r = inferirTemporadaBajaAridos({ cargas: [carga('2026-01-10', 'ARIDOS'), carga('2026-08-10', 'ARIDOS')], periodo, utilizacion: null });
+    assert.equal(r.bajoUso, false);
+    assert.deepEqual(r.rangos, [{ desde: '2026-02-01', hasta: '2026-07-31', categoria: 'temporada_baja' }]);
+});
+
+test('uso bajo sobre un tramo corto suma los meses sin cargas de afuera, sin solaparlos', () => {
+    const u = { ...uso('baja'), desde: '2026-05-01', hasta: '2026-08-31' };
+    const r = inferirTemporadaBajaAridos({ cargas: [carga('2026-01-10', 'ARIDOS'), carga('2026-05-10', 'ARIDOS'), carga('2026-08-10', 'ARIDOS')], periodo, utilizacion: u });
+    assert.deepEqual(r.rangos.map(x => [x.desde, x.hasta]), [['2026-02-01', '2026-04-30'], ['2026-05-01', '2026-08-31']]);
+});
+
+test('sin cargas no hay de donde deducir ARIDOS', () => {
+    assert.equal(inferirTemporadaBajaAridos({ cargas: [], periodo, utilizacion: uso('muy_baja') }), null);
 });

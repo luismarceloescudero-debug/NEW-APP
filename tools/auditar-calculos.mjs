@@ -267,7 +267,11 @@ for (const f of filas) {
     // Reconciliacion total contra la planilla: nada de lo importado puede desaparecer sin
     // que algun campo publicado lo explique (dentro del periodo, fuera del periodo, o excluido).
     const fp = totales.fuera_de_periodo || { litros: 0, costo: 0 };
-    const cargasUtiles = rawRecords.filter(r => r.type === 'carga' && !r._dupe_exacta && !((parseFloat(r.litros) || 0) === 0 && (parseFloat(r.importe) || 0) === 0));
+    // Las cargas históricas (2024/2025) quedan afuera de la reconciliación: no las publica
+    // ningún campo —el analyzer las excluye por `solo_historico`— así que exigir que cierren
+    // contra "del período + fuera del período" las haría aparecer como litros desaparecidos
+    // cuando en realidad nunca entraron. Ver CARGAS_HISTORICAS en js/parsers/esquemas.js.
+    const cargasUtiles = rawRecords.filter(r => r.type === 'carga' && !r._dupe_exacta && !r.solo_historico && !((parseFloat(r.litros) || 0) === 0 && (parseFloat(r.importe) || 0) === 0));
     const litrosPlanilla = cargasUtiles.reduce((s, c) => s + (parseFloat(c.litros) || 0), 0);
     check('flota', 'litros del periodo + litros fuera del periodo = litros de la planilla',
         casi(totales.total_litros + fp.litros, litrosPlanilla, 1e-9, 0.05),

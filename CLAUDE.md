@@ -47,12 +47,18 @@ Son las razones por las que esta bifurcación vale la pena:
    rate limiting y un secreto compartido que viaja en el JS. Para publicar el sitio fuera de
    localhost hace falta `OLLAMA_ORIGINS` (ver `docs/DEPLOYMENT.md`). No hay búsqueda web: un
    modelo local no sale a internet solo, y agregarla implicaría el backend que esta fase evita.
-2. **Importación flexible** (`js/parsers/esquemas.js` + `js/ui/mapeo.js`). Cuando un archivo no
-   coincide exacto con un formato conocido, se puntúa contra cada esquema y se abre la vista
-   previa "Revisar columnas antes de importar", que muestra qué entendió la app de cada columna
-   y deja corregirlo **antes** de combinar nada. Incluye detección de superposición: caso real,
-   el reporte de la estación GRIS repetía cargas de la planilla global; si se superpone, por
-   defecto se guarda aparte y **no suma litros**.
+2. **Importación flexible** (`js/parsers/esquemas.js`). Cuando un archivo no coincide exacto con
+   un formato conocido, se puntúa contra cada esquema y entra por el importador genérico, o por
+   el mapeo que se haya recordado antes para esa misma firma de encabezados. Incluye detección de
+   superposición: caso real, el reporte de la estación GRIS repetía cargas de la planilla global;
+   si se superpone, por defecto se guarda aparte y **no suma litros**.
+
+   **La vista previa "Revisar columnas antes de importar" se eliminó el 05/10/2026** (era
+   `js/ui/mapeo.js`, borrado, junto con su CSS). El motivo que dio el usuario: no servía porque
+   no se ve la información de un vistazo. `inspeccionarArchivo()` sigue existiendo y sigue
+   usándose, pero ahora solo para **ordenar** la importación (los formatos conocidos primero, así
+   las cargas de la planilla global ya están guardadas cuando un archivo recordado se compara
+   contra ellas para detectar duplicados). No volver a proponerla como deuda.
 3. **Backup y restauración** (`js/ui/backup.js`).
 4. **PWA instalable y sin conexión**: `manifest.webmanifest`, `sw.js`, CSP, y Font Awesome
    vendorizado en `vendor/` — sin ningún CDN externo.
@@ -122,7 +128,7 @@ Correrlo **antes de commitear** cualquier cosa en `js/data/` o `js/parsers/`. Lo
 | `npm run auditar` | ¿Cada número se puede re-derivar de su propia definición? | minutos |
 
 **`npm test` — la suite de unit tests (`tests/*.test.mjs`, node:test, sin dependencias).**
-308 casos sobre las funciones puras de `js/data/` y `js/parsers/`. No reemplaza a ningún arnés
+386 casos sobre las funciones puras de `js/data/` y `js/parsers/`. No reemplaza a ningún arnés
 y ninguno lo reemplaza a él: los arneses corren el pipeline entero sobre los Excel reales y
 contestan *"¿el total cambió?"*; los tests fijan el **contrato de cada función por separado** y
 contestan *"¿esta pieza sigue haciendo lo que dice que hace?"* — sin planillas, en segundos, y
@@ -378,7 +384,7 @@ La denominación canónica sale del prefijo del interno (`getDenominacion()`).
    indexan por una **huella estable** del registro (`huellaCarga()`), no por el equipo asignado.
 5. **`js/data/analyzer.js`** — reglas de negocio: alineación de períodos (`alinearCargasYGps`),
    métricas (`calculateMetrics`), tipo de cálculo, KPIs de flota.
-6. **`js/data/diagnostico.js`** (~2.780 líneas) — el motor de diagnóstico: ~20 reglas `detectarXxx`
+6. **`js/data/diagnostico.js`** (~2.860 líneas) — el motor de diagnóstico: ~20 reglas `detectarXxx`
    que producen `hallazgos`. Cada hallazgo tiene `titulo` (escapado al renderizar) y `detalle`
    (**se renderiza como HTML crudo a propósito**, para poder poner `<strong>` en los números).
    Cualquier texto libre que venga de una planilla y termine dentro de `detalle` **tiene que**
@@ -387,8 +393,14 @@ La denominación canónica sale del prefijo del interno (`getDenominacion()`).
 7. **`js/data/autocorreccion.js`** — corre una vez por `renderPanel()`, antes de dibujar nada.
    Aplica solo las correcciones **sin ambigüedad** y registra cada acción en `accionesAutomaticas`,
    para que aparezca como hallazgo "se aplicó sola" en vez de desaparecer en silencio.
-8. **`js/ui/panel.js`** (~5.520 líneas, el archivo más grande) — el Panel unificado.
+8. **`js/ui/panel.js`** (~5.580 líneas, el archivo más grande) — el Panel unificado.
    `js/ui/datatable.js` (~2.214) es el editor de tablas crudas.
+
+Módulos puros que cuelgan de ese pipeline, todos con tests y sin DOM ni IndexedDB:
+`planta.js` (servicios de planta y temporada baja), `estados-equipo.js` (estados fuera de
+operación, fecha de venta, altas), `revision-consumo.js` (consumos marcados para revisar),
+`resolucion-identidad.js` (a qué equipo va un código dudoso) y `alcance.js` (recorte del universo).
+Su UI vive en `js/ui/estados.js` y en panel.js.
 
 ### Las tres invariantes que mantienen los números honestos
 
@@ -444,8 +456,17 @@ confirmadas contra el comprobante por HSV y se aplican directo:
 (`_alias_de`, `_dominio_original`), así que revertir es exacto. Tres reglas:
 
 - **Tipeo con evidencia**: el código está a una letra de un interno real, su prefijo no existe en la
-  flota Y comparte lugar de carga o centro de costo con él. Sin esa pista no se toca. Medido: GR01
-  → GE01 (ARIDOS / AMZA).
+  flota Y comparte con él alguno de los datos que acompañan a la carga. Sin esa pista no se toca.
+  Medido: GR01 → GE01 (ARIDOS / AMZA).
+
+  **Desde el 05/10/2026 se miran cuatro campos, no dos, y no pesan igual** (`CAMPOS_PISTA` en
+  `resolucion-identidad.js`). Lugar de carga, centro de costo y chofer son pistas **fuertes**:
+  alcanza una para habilitar la corrección, porque cada valor es de unos pocos equipos y por lo
+  tanto distingue. El tipo de combustible es **débil**: suma a la evidencia escrita cuando ya hay
+  una fuerte, pero **nunca alcanza solo**. Es el límite que hace que sumar campos no afloje la
+  regla: casi toda la flota carga GASOIL, así que si contara por sí mismo, cualquier código a una
+  letra de otro se "corregiría" solo y los litros se moverían de equipo sin que nadie lo note.
+  Hay un test de regresión por cada mitad de esa decisión (`tests/resolucion-identidad.test.mjs`).
 - **Servicio de planta escrito con su nombre**: LIMPIEZA en Godoy Cruz → LM01, CALDERA en Tunuyán →
   CA01 (`SERVICIO_POR_SEDE`). Hoy los datos ya traen el código, así que no dispara.
 - **Patente sin interno con centro de costo**: se acepta sola (`aceptado_no_flota`, revertible) si
@@ -492,6 +513,144 @@ salen de los hallazgos de consumo rodante (`sin_medicion`, subutilización, etc.
 - Medido con los archivos reales: 8 servicios (4.631 L), 7 estados asumidos; totales sin cambio.
 - Sigue abierto: las "otras planillas" solo aportan horas/km si el servicio aparece en ellas; hoy
   ninguno tiene GPS.
+
+### El ralentí ya no se analiza aparte: se entregan horas totales (05/10/2026)
+
+Decisión del usuario: "directamente entregar horas totales (movimiento + ralentí)". El KPI "Horas
+de uso" dice `movimiento + ralentí` en su subtítulo y ya no publica el desglose; las etiquetas de
+ralentí salieron de las tarjetas chicas y de las ampliadas, y la comparativa dejó de ofrecer
+"horas en ralentí" y "% del tiempo en ralentí" (ahora muestra horas totales).
+
+**El cálculo sigue entero en `diagnostico.js`** — `horas_ralenti`, `horas_movimiento`,
+`categoriaRalenti()`, los hallazgos `ralenti`, `ralenti_inverosimil` y `ralenti_camionetas`, los
+estados "aceptable" y los reclamos de GPS. Lo que se agregó es un filtro de presentación en
+panel.js, `IDS_RALENTI_OCULTOS`, que los saca del panel y del seguimiento. Volver a prenderlos es
+borrar ese Set. Se eligió ocultar y no borrar porque el ralentí sigue alimentando
+`total = ralentí + movimiento`, que es lo que `npm run unidades` verifica.
+
+### Consumos altos, bajos y esporádicos marcados para revisar (05/10/2026)
+
+`js/data/revision-consumo.js` (puro, 22 tests) + store `revisionesConsumo` (DB v15).
+
+El problema que resuelve: un consumo raro se veía en el panel del período que se estaba mirando y
+se perdía. Dos meses después nadie sabía si ese equipo seguía igual, si se había normalizado, o si
+en realidad había estado en el taller y por eso el número daba raro.
+
+Marcar guarda una **foto** (`fotoDeConsumo()`): el número, su base y **el período sobre el que se
+vio**. Sin el período no habría contra qué comparar después. Cuando entran meses nuevos, cada
+revisión se re-evalúa sola (`evaluarRevisiones()`, que corre en `panel.js` y entra al diagnóstico
+por `extraDiag()`) y da uno de cuatro veredictos: **persiste** (mismo patrón con más datos: ya no
+es un dato puntual), **explicado** (hay un estado anotado que se solapa con el período revisado),
+**normalizado** (el patrón ya no aparece) o **sin_datos**.
+
+Dos decisiones que no son obvias:
+
+- **Los umbrales no se eligen acá.** `alto` y `bajo` salen de `TOLERANCIA_DESVIO` (el mismo 0,15
+  que usan los hallazgos de sobreconsumo y ahorro, ahora exportado) y `esporadico` de
+  `cadenciaCargas()`. Escribir un umbral "parecido" es justo lo que prohíbe la invariante 2.
+- **Un estado da contexto pero no prueba la causa.** Un equipo parado medio período carga poco
+  (consumo bajo) pero también acumula pocas horas, así que su L/hora puede salir **alto**: el
+  estado no determina el signo del desvío. Por eso el veredicto informa el solapamiento y deja la
+  conclusión a quien lo lee (invariante 3).
+
+**Import circular a evitar:** `revision-consumo.js` importa de `diagnostico.js`, así que el
+hallazgo `revisiones_consumo` recibe las revisiones **ya evaluadas** en `extra` y solo les da
+forma. La etiqueta del patrón viaja resuelta (`patronLabel`) por lo mismo.
+
+### Equipos fuera de operación y alta de equipos nuevos (05/10/2026)
+
+`js/data/estados-equipo.js` (puro, 18 tests) + `js/ui/estados.js` (los modales) + la tarjeta
+`kpi-estados` en el dashboard.
+
+`CATEGORIAS_SEGUIMIENTO` se mudó acá desde panel.js y sumó **Traslado a San Juan** y **Vendido**.
+`CATEGORIAS_FUERA_DE_OPERACION` son las cinco que cuenta la tarjeta (fuera de servicio, traslado a
+San Juan, taller externo, taller interno, vendido); temporada baja, sin chofer y backup quedan
+afuera a propósito: no son "fuera de operación". Un estado sin fecha de fin usa `HASTA_ABIERTO`
+(`2099-12-31`), que solapa con cualquier período porque los rangos se recortan al período
+analizado.
+
+La tarjeta también ofrece **dar de alta un equipo** a mano (`validarAlta()` rechaza duplicados por
+clave normalizada: `TR-21`, `TR 21` y `TR21` son el mismo) y **completar los datos de las altas
+automáticas** (`altasConDatosPendientes()`): los equipos que el análisis dio de alta solo y a los
+que les faltan patente, marca, modelo, año o potencia. Eso es lo que convierte el alta automática
+en un pedido concreto de información en vez de un equipo a medio cargar.
+
+**Un equipo vendido NO sale de los totales ni pierde su tarjeta.** Lo que gastó mientras era de la
+empresa es gasto real y tiene que verse si el período lo incluye — verificado: la tarjeta de un
+equipo marcado vendido sigue visible y sus litros siguen contando. Lo que no puede ser es una
+carga **posterior** a la venta: `cargasPosterioresALaVenta()` las detecta y el hallazgo
+`cargas_post_venta` (severidad alta) las informa. No se corrigen solas porque hay exactamente dos
+salidas y son arreglos distintos: o la fecha de venta está mal, o esas cargas se imputaron al
+equipo equivocado.
+
+**No hay un campo `fecha_venta`**: la fecha de venta ES el `desde` del rango del estado `vendido`
+(`fechaDeVenta()`). Duplicar el dato abriría la puerta a que los dos no coincidan.
+
+### Cargas de años anteriores: histórico, fuera del cálculo (05/10/2026)
+
+`CARGAS_HISTORICAS` en `js/parsers/esquemas.js`. Medido al importar los Excel reales:
+
+```
+Cargas_Combustible_HSV_2025.xlsx   7.476 filas   (hojas GODOY CRUZ / SAN MARTIN / TUNUYAN)
+Combustible PMZA 2024.xlsx         5.739 filas   (hoja "2024")
+                                  13.215 filas · 1.820.733,7 L · 0 con importe
+```
+
+**Es el mismo dato que CARGAS en el formato viejo**, y entra marcado `solo_historico: true`, que
+lo deja fuera del cálculo corriente igual que `solo_comparativa` con los Resumen de viaje.
+Verificado: el período sigue en 2026, el KPI de litros no se mueve, y 0 filas históricas entran
+a ninguna fila del análisis.
+
+Tres razones por las que no pueden sumarse al período, y las tres son medidas:
+
+1. **No traen plata**: ni precio ni importe en ninguna de las 13.215 filas. Entrarían al KPI de
+   costo en cero y el hallazgo "cargas sin valorizar" las reportaría como error para siempre.
+2. **No hay GPS de esos años**, así que no hay denominador: se puede medir cuántos litros gastó
+   un equipo, no su consumo.
+3. Estirarían el período a 2024–2026 y toda razón de la app pasaría a mezclar años.
+
+**Lo que distingue al formato es la columna del lugar**: el viejo dice `PLANTA DE CARGA`,
+`PLANTA DE CERGA` (con el typo, tal cual viene en dos de las tres hojas del 2025) o `Pta Carga`;
+el corriente dice `LUGAR DE CARGA`. El 2024 además trae `DOMINIO` en vez de `INTERNO-DOMINIO` y
+no tiene centro de costo.
+
+**La primera hoja del 2025 no son cargas.** Es `CONFIG`, una tabla de equivalencias
+interno → sector (100 filas). Antes `procesarLibro()` miraba solo la primera hoja, así que ese
+archivo caía al importador genérico e importaba 100 filas de lookup en vez de 10.558 cargas, sin
+ningún error. Ahora `elegirHojaPrincipal()` sigue buscando en las demás hojas si la primera no da
+un tipo conocido, y `LEE_TODAS_LAS_HOJAS` cubre los dos formatos que reparten datos entre hojas
+(Loop y el histórico).
+
+**Dónde hubo que excluirlos aparte**, porque cada uno falló y lo encontró su propio arnés:
+
+| Lugar | Qué pasaba sin excluirlos |
+|---|---|
+| `analizarFlota()` | el período se estiraba a 2024–2026 |
+| `auditarCalidadCargas()` | 13.215 filas como "sin valorizar", y 24 meses "sin GPS" que nunca lo van a tener |
+| `tools/auditar-unidades.mjs` | fallaba el contrato de importe por 13.215 filas sin valor |
+| `tools/auditar-calculos.mjs` | la reconciliación 1b daba 1.810.784 L "desaparecidos" |
+
+`claveCargaExacta()` lleva un prefijo `H`/`C` para que una fila histórica nunca se considere copia
+exacta de una corriente. **Hoy no cambia ningún resultado y está medido** (0 colisiones sobre
+13.215 filas, porque las históricas no traen importe ni precio y las corrientes sí): es protección
+latente para el día que un histórico venga con plata, en que la fila REAL quedaría marcada como
+copia —el histórico se importa antes por orden alfabético— y saldría del cálculo sin aviso.
+
+### Las sedes y la columna del lugar de carga
+
+`SEDES_POR_LUGAR` / `sedeDeLugarCarga()` en normalizer.js. **La columna del lugar no es una
+localidad**: mezcla la sede con el punto de carga, y en los archivos viejos con el sector. Medido:
+
+```
+2024/2025   3 valores:  GC (11.203) · TYAN (1.405) · SM (607)
+2026        8 valores:  GODOY CRUZ 2303 · GRIS 983 · TUNUYAN 699 · ARIDOS 603
+                        SAN MARTIN 385 · EE SS CORONEL DIAZ 82 · GNC GODOY CRUZ 15 · ALTAMIRA 1
+```
+
+Es el mismo dato con otra disposición: dentro del lugar `GC` del histórico, la columna
+`OBSERVACION` trae ARIDOS (2.778), GRIS (2.597) y EE SS CORONEL DIAZ (48, escrito de dos formas).
+En 2026 esos detalles subieron a la columna del lugar. ALTAMIRA aparece como observación dentro de
+TYAN. Un lugar que no está en la tabla **es su propia sede**: agruparlo de más escondería un dato.
 
 ### Un mes cubierto a medias no entra al ratio
 
@@ -561,11 +720,78 @@ condición para disparar es estricta a propósito — coincidencia exacta con la
 la misma fila, más litros y precio disponibles — porque caer en el rango de seriales no alcanza
 como señal: hay 28 importes legítimos en ese rango.
 
-### Los duplicados se descartan al importar, no se reportan después
+### Cargas que un equipo no pudo haber hecho (05/10/2026)
 
-`insertRawRecords()` marca con `_dupe_exacta` cualquier fila idéntica a una ya guardada. Las filas
-**se conservan** en IndexedDB y siguen visibles. Eso es lo que hace seguro volver a subir un
-archivo o agregar meses nuevos sin limpiar.
+`js/data/cargas-imposibles.js`. Usa **solo tres datos de la fila: el equipo, los litros y la
+fecha.** La fecha agrupa por día y de ahí salen las dos señales:
+
+1. **Cuántas cargas en un día.** Medido sobre los 4.641 equipo-días reales: 94,9% una sola carga,
+   4,8% dos, 0,17% tres, y **ninguno con 4, 5 ni 6**. El siguiente valor observado salta a 7. El
+   máximo legítimo por denominación es 3 (mixers en 1.992 días, tractores en 1.158). El umbral
+   `MAX_CARGAS_DIA = 3` cae en ese hueco, no pegado a los casos.
+2. **Cuántos litros en un día** contra lo que carga por vez un equipo de su misma denominación
+   (`FACTOR_LITROS_DIA = 5`). Los casos verdaderos dan entre 9 y 38 veces.
+
+**La referencia de litros por carga EXCLUYE al equipo juzgado.** Es el punto del módulo: si lo
+incluyera, sus cargas malas correrían la referencia hacia arriba y se taparían a sí mismas. Un
+equipo único en su denominación queda sin referencia a propósito y la señal volumétrica se calla,
+en vez de medirlo contra sí mismo. La señal de cantidad sí aplica igual: cuántas veces puede
+cargar un equipo en un día no depende de sus pares.
+
+**Por qué no alcanzaba el hallazgo `anomalas`**, que ya existía: compara cada carga contra la
+mediana del PROPIO equipo (`litros > mediana × 3`). En CM43, 23 de sus 38 cargas eran las malas,
+así que corrieron su mediana y se taparon entre ellas.
+
+**Lo que este módulo deliberadamente NO mira es el lugar de carga.** Una versión intermedia sumaba
+una señal geográfica ("cargó en tres lugares distintos el mismo día") y marcaba a TR32 por
+GRIS + EE SS CORONEL DIAZ + TUNUYAN. Dos problemas: esos tres son dos sedes, no tres (ver
+`SEDES_POR_LUGAR`), y sobre todo **juzgar un recorrido exige saber la distancia entre dos puntos,
+y la planilla no la dice**. Decisión del usuario: para esto solo interesan interno-dominio,
+litros y fechas. No volver a agregarla.
+
+La **frecuencia** con que un equipo carga (cargas por mes, meses con carga) no se calcula acá: ya
+es `cadenciaCargas()`, y de ahí sale el patrón "esporádico" de las revisiones de consumo.
+
+Medido sobre los Excel reales — 2 equipos, 6 equipo-días, de 4.950 cargas:
+
+```
+BM14  53 cargas en 4 días de enero · 8.356 L · hasta 25 cargas en un día · hasta 38× lo normal
+CM43  23 cargas en 2 días de sept  · 3.295 L · hasta 16 cargas en un día · hasta 37× lo normal
+```
+
+**BM14 era el "+66% contra sus pares"** del hallazgo `pares`: no consume de más, tiene cargas
+ajenas imputadas. O sea que `pares` estaba reportando un artefacto de datos como problema
+operativo. No se corrige solo: el equipo real no está en la fila.
+
+### Los duplicados exactos se descartan solos y queda el histórico (05/10/2026)
+
+Dos pasos, y los dos hacen falta:
+
+1. `insertRawRecords()` **marca** con `_dupe_exacta` cualquier fila idéntica a una ya guardada, y
+   el análisis la saltea (`registroExcluido()` en analyzer.js). Eso es lo que hace seguro volver a
+   subir un archivo o agregar meses nuevos sin limpiar.
+2. `autocorreccion.js`, en el render siguiente, **la borra**. Guarda la fila entera en la acción
+   automática (`tipo: 'dedupe_exacto'`, campo `snapshot`) y la elimina de `raw_records`, así deja
+   de verse en Base de Datos y lo que queda es el histórico con **Deshacer**.
+
+**Por qué no se borra directo en el import:** "idéntico" se define comparando TODOS los campos
+(importe, precio unitario, combustible, lugar, centro de costo, chofer, hora) y eso lo hace
+`auditarCalidadCargas()` en diagnostico.js, que corre sobre el conjunto ya guardado. El import solo
+conoce su propia clave exacta.
+
+`dedupe_exacto` es la **única** acción automática que borra un registro, y por eso es la única que
+guarda un `snapshot`: las demás reasignan o completan datos, y les alcanza con `_alias_de` /
+`_dominio_original` en el propio registro. Su "Deshacer" saca además la corrección persistente
+(`deleteCorreccionCarga`), o la copia volvería a caer en la próxima reimportación. Verificado:
+3 cargas → 2, Deshacer → 3, y un render nuevo ya **no** la vuelve a borrar.
+
+La corrección persistente va por huella con `accion: 'dedupe'` + `conservar: 1`, **nunca**
+`'eliminar'`: las dos filas del par comparten huella, así que un `'eliminar'` saltearía las dos al
+reimportar y se perdería también la carga buena.
+
+El modal "Cargas repetidas" sigue existiendo, pero ahora su trabajo real son las **posibles**
+repetidas (mismo equipo, fecha y litros con algún otro campo distinto), que no se tocan solas
+porque pueden ser legítimas.
 
 Las entregas de Loop se fusionan por número de remito. **Cuando una fusión toca el mismo registro
 ya guardado más de una vez dentro de la misma llamada, hay que acumular los cambios en un

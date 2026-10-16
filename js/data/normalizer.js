@@ -653,7 +653,11 @@ export function parseDuration(val) {
     // reales se leían como 10,9 hs (o peor), y el consumo del equipo salía por las nubes
     // porque los litros quedaban divididos por una fracción de las horas que trabajó.
     let dias = 0;
-    const mDias = str.match(/^\s*(\d+(?:[.,]\d+)?)\s*(?:d|d[íi]as?|days?)\b[\s,]*/i);
+    // Las alternativas van de la MÁS LARGA a la más corta, y eso no es cosmético: con `d`
+    // primero, "2 días 4:15:00" matcheaba solo la "d" —el `\b` da por válido el corte porque "í"
+    // no es carácter de palabra para \w— y dejaba "ías 4:15:00", que se parseaba como 0 h 15 min.
+    // Daba 48,25 hs en vez de 52,25: cuatro horas de menos, sin error y con una cifra plausible.
+    const mDias = str.match(/^\s*(\d+(?:[.,]\d+)?)\s*(?:d[íi]as?|days?|d)\b[\s,]*/i);
     if (mDias) {
         dias = parseFloat(mDias[1].replace(',', '.')) || 0;
         str = str.slice(mDias[0].length).trim();
@@ -751,10 +755,68 @@ export function claveGpsExacta(g) {
     ].join('|');
 }
 
+/**
+ * Las tres sedes de HSV, y todas las formas en que las planillas nombran un lugar de carga
+ * dentro de cada una.
+ *
+ * Esto existe porque la columna del lugar NO es una localidad: mezcla la sede con el punto de
+ * carga y, en los archivos viejos, con el sector. Medido el 05/10/2026 sobre los Excel reales:
+ *
+ *   - 2024/2025 traen SOLO tres valores: GC (11.203 filas), TYAN (1.405), SM (607). Lo demás
+ *     vivía en la columna OBSERVACION, y ahí dentro de GC aparecen ARIDOS (2.778), GRIS (2.597)
+ *     y EE SS CORONEL DIAZ (48, escrito de dos maneras).
+ *   - 2026 subió esos detalles a la columna del lugar, así que el mismo dato pasó a verse como
+ *     ocho valores: GODOY CRUZ, GRIS, ARIDOS, EE SS CORONEL DIAZ y GNC GODOY CRUZ son todos
+ *     Godoy Cruz; ALTAMIRA cae en el área de Tunuyán (aparece como observación dentro de TYAN).
+ *
+ * Por qué importa: contar strings distintos en vez de localidades hace que un equipo que cargó
+ * en GRIS y en GODOY CRUZ el mismo día parezca haber estado en dos lugares, cuando estuvo en
+ * uno. Eso es lo que marcaba a TR32 como imposible sin serlo (ver cargas-imposibles.js).
+ */
+export const SEDES_POR_LUGAR = {
+    'GODOY CRUZ': ['GC', 'GODOY CRUZ', 'GNC GODOY CRUZ', 'GRIS', 'ARIDOS', 'CORONEL DIAZ'],
+    'TUNUYAN': ['TYAN', 'TUNUYAN', 'ALTAMIRA'],
+    'SAN MARTIN': ['SM', 'SAN MARTIN']
+};
+
+/**
+ * La sede a la que pertenece un lugar de carga. Devuelve el lugar normalizado tal cual si no se
+ * reconoce: un lugar nuevo es su propia localidad hasta que alguien lo asigne, que es la opción
+ * conservadora — agruparlo de más escondería un recorrido imposible.
+ */
+export function sedeDeLugarCarga(lugar) {
+    const l = normalizeString(lugar);
+    if (!l) return '';
+    // Coincidencia exacta primero: "GC" no puede matchear por "contiene" con cualquier texto
+    // que tenga esas dos letras.
+    for (const [sede, variantes] of Object.entries(SEDES_POR_LUGAR)) {
+        if (variantes.some(v => normalizeString(v) === l)) return sede;
+    }
+    // Después "contiene", solo con variantes de 4+ letras: cubre "EE. SS. CORONEL DIAZ" y
+    // "EE.SS. CORONEL DIAZ" con una sola entrada, sin inventar una por cada puntuación.
+    for (const [sede, variantes] of Object.entries(SEDES_POR_LUGAR)) {
+        if (variantes.some(v => { const nv = normalizeString(v); return nv.length >= 4 && l.includes(nv); })) return sede;
+    }
+    return l;
+}
+
 export function claveCargaExacta(c) {
     const txt = (v) => String(v == null ? '' : v).trim().toUpperCase();
     const cent = (v) => Math.round((parseFloat(v) || 0) * 100);
     return [
+        // Una carga histórica (2024/2025) y una del período corriente NUNCA son la misma fila,
+        // aunque coincidan en todo: una se publica y la otra es referencia.
+        //
+        // Hoy esto NO cambia ningún resultado y está medido: el archivo 2025 trae 23 filas
+        // fechadas en 2026, pero ninguna choca con una carga real (0 colisiones sobre 13.215
+        // filas históricas), porque las históricas no traen importe, precio ni combustible y las
+        // corrientes sí, así que las claves ya difieren por esos campos.
+        //
+        // Es una protección latente, no un arreglo: el día que un histórico venga con importe —o
+        // que un archivo corriente llegue sin precio— esas claves pasarían a coincidir, y como
+        // el histórico se importa antes (orden alfabético del nombre de archivo) la fila REAL
+        // quedaría marcada como copia y saldría del cálculo sin ningún aviso.
+        c.solo_historico ? 'H' : 'C',
         txt(c.interno_key || c.interno),
         c.fecha || '',
         Math.round((parseFloat(c.litros) || 0) * 10),

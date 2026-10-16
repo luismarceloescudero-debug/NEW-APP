@@ -12,17 +12,20 @@
  */
 import { getAllEquipos, updateEquipo, registrarEdicion } from '../data/database.js';
 import { sugerirMeta, metaDesdeConsumoReal, confiabilidad } from '../data/diagnostico.js';
+import { esServicioPlanta } from '../data/planta.js';
 
 const nf = (n, d = 0) => Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: d, maximumFractionDigits: d });
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
 let filasRef = [];
+let todasRef = [];
 let periodoRef = null;
 let seleccion = new Set();
 let overlay = null;
 
 export function abrirAjusteMetas(analisis, filtroInicial = 'todos', internosIniciales = []) {
-    filasRef = (analisis?.filas || []).filter(f => ['L/Hora', 'L/100Km'].includes(f.metrics.tipo_calculo));
+    todasRef = analisis?.filas || [];
+    filasRef = todasRef.filter(f => ['L/Hora', 'L/100Km'].includes(f.metrics.tipo_calculo));
     periodoRef = analisis?.totales ? { desde: analisis.totales.periodo_desde, hasta: analisis.totales.periodo_hasta } : null;
     seleccion = new Set(internosIniciales);
     cerrar();
@@ -118,7 +121,7 @@ export function abrirAjusteMetas(analisis, filtroInicial = 'todos', internosInic
         const visibles = filtrar().map(f => f.equipo.interno);
         visibles.forEach(i => seleccion.add(i));
         pintar();
-        aplicar({ avisoConfiabilidad: estabaTildado });
+        aplicar({ avisoConfiabilidad: estabaTildado, pedirActividad: true });
     });
 
     pintar();
@@ -241,10 +244,31 @@ async function aplicar(opts = {}) {
         cerrar();
         if (typeof window.renderPanel === 'function') await window.renderPanel();
         alert(`Listo: ${conValor.length} metas actualizadas.${pocaCobertura ? ` (${pocaCobertura} con poca cobertura de datos, revisar cuando haya más cargas cargadas)` : ''}`);
+        if (opts.pedirActividad) pedirActividadFaltante();
     } catch (e) {
         console.error('Error aplicando metas:', e);
         alert('No se pudieron aplicar todas las metas: ' + e.message);
     } finally {
         if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-check"></i> Aplicar a los seleccionados'; }
+    }
+}
+
+/**
+ * Después de normalizar con el real, los equipos que cargan combustible pero no tienen consumo
+ * medible (sin GPS, sin horas ni km) se quedan sin meta: para esos casos puntuales se pide ingresar
+ * horas o km. Los servicios de planta no entran: no se les pide actividad.
+ */
+function pedirActividadFaltante() {
+    const sinBase = todasRef
+        .filter(f => f.metrics.cantidad_cargas > 0 && !esServicioPlanta(f.equipo.interno) && !metaDesdeConsumoReal(f))
+        .map(f => f.equipo.interno);
+    if (!sinBase.length || typeof window.abrirActividadEstimada !== 'function') return;
+    const lista = sinBase.slice(0, 12).join(', ') + (sinBase.length > 12 ? ` y ${sinBase.length - 12} más` : '');
+    if (confirm(`${sinBase.length} equipos cargan combustible pero no tienen horas ni km para calcular su consumo real, así que quedaron sin meta:
+
+${lista}
+
+¿Ingresar horas o km ahora?`)) {
+        window.abrirActividadEstimada(sinBase);
     }
 }

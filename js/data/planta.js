@@ -58,6 +58,35 @@ export function inferirEstadoPlanta({ cargas = [], periodo = null } = {}) {
     };
 }
 
+/**
+ * Temporada baja inmediata para equipos de ARIDOS (cualquier tipo, no solo servicios de planta).
+ * Se marca cuando el equipo carga en ARIDOS y, o bien su uso es bajo (`utilizacion.estado` 'baja' o
+ * 'muy_baja', ver utilizacion() en diagnostico.js), o bien hay meses del período sin ninguna carga.
+ * Fuera de ARIDOS no se asume nada: un consumo bajo ahí sigue siendo un hallazgo a mirar.
+ * `utilizacion` es el resultado de utilizacion() (o null si no se pudo calcular). Devuelve null si
+ * no hay nada que marcar; si no, { categoria, rangos, motivo } con rangos en el formato del estado.
+ */
+export function inferirTemporadaBajaAridos({ cargas = [], periodo = null, utilizacion = null } = {}) {
+    if (!cargaEnAridos(cargas)) return null;
+    const bajo = !!utilizacion && (utilizacion.estado === 'baja' || utilizacion.estado === 'muy_baja');
+    const sinCarga = inferirEstadoPlanta({ cargas, periodo });
+    if (!bajo && !sinCarga) return null;
+
+    const rangos = [];
+    if (bajo) rangos.push({ desde: utilizacion.desde, hasta: utilizacion.hasta, categoria: 'temporada_baja' });
+    for (const r of (sinCarga ? sinCarga.rangos : [])) {
+        if (!bajo || r.hasta < utilizacion.desde || r.desde > utilizacion.hasta) rangos.push(r);
+    }
+    rangos.sort((a, b) => a.desde.localeCompare(b.desde));
+    const partes = [];
+    if (bajo) partes.push(`uso bajo (${Math.round(utilizacion.hsPorDia * 10) / 10} hs por día hábil contra ${utilizacion.esperadoTexto} esperadas)`);
+    if (sinCarga) partes.push(`sin cargas en ${sinCarga.mesesSinCarga.join(', ')}`);
+    return {
+        categoria: 'temporada_baja', rangos, bajoUso: bajo, mesesSinCarga: sinCarga ? sinCarga.mesesSinCarga : [],
+        motivo: `Carga en ARIDOS y ${partes.join(' y ')}: se marca temporada baja. Corregible desde Estado.`
+    };
+}
+
 const igual = (a, b) => { const x = normalizeString(a), y = normalizeString(b); return !!x && x === y; };
 
 /**

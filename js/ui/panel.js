@@ -4,10 +4,14 @@
  * Todo número mostrado acá registra sus pasos de cálculo (ver calcpopover.js): al hacer
  * click en cualquier KPI o métrica de una tarjeta se abre el detalle de cómo se obtuvo.
  */
-import { getAlcanceDecision, setAlcanceDecision, getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, editarCampoEquipo, getRalentiEstados, setRalentiEstado, quitarRalentiEstado, crearReclamoGPS, getReclamosGPS, actualizarReclamoGPS, getNoFlotaAceptados, setNoFlotaAceptado, quitarNoFlotaAceptado, getEquiposExcluidos, setEquipoExcluido, quitarEquipoExcluido, updateRawRecord, registrarEdicion, saveCorreccionCarga, huellaCarga, getPrefijosNoFlota, agregarPrefijoNoFlota, quitarPrefijoNoFlota, getSeguimientoEquipos, setSeguimientoEquipo, setSeguimientoRangos, quitarSeguimientoEquipo, getActividadEstimada, setActividadEstimada, quitarActividadEstimada, deleteRawRecord, getAccionesAutomaticas, getReferentesMeta, setReferentesMeta, getPlanillaPrincipal } from '../data/database.js';
+import { getAlcanceDecision, setAlcanceDecision, getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, editarCampoEquipo, getRalentiEstados, setRalentiEstado, quitarRalentiEstado, crearReclamoGPS, getReclamosGPS, actualizarReclamoGPS, getNoFlotaAceptados, setNoFlotaAceptado, quitarNoFlotaAceptado, getEquiposExcluidos, setEquipoExcluido, quitarEquipoExcluido, updateRawRecord, registrarEdicion, saveCorreccionCarga, huellaCarga, getPrefijosNoFlota, agregarPrefijoNoFlota, quitarPrefijoNoFlota, getSeguimientoEquipos, setSeguimientoEquipo, setSeguimientoRangos, quitarSeguimientoEquipo, getActividadEstimada, setActividadEstimada, quitarActividadEstimada, deleteRawRecord, getAccionesAutomaticas, getReferentesMeta, getRevisionesConsumo, setRevisionConsumo, quitarRevisionConsumo, setReferentesMeta, getPlanillaPrincipal } from '../data/database.js';
 import { analizarFlota, periodosDisponibles, periodosAnalisisAutomatico, resumirMovimientosGenericos, registroVacio, mesesDeRegistro } from '../data/analyzer.js';
 import { detectarAlcanceParcial, filtrarPorAlcance } from '../data/alcance.js';
-import { generarDiagnostico, sugerirMeta, evolucionMensual, categoriaRalenti, actividadImplicita, coberturaEquipo, completitudDatos, mesesFueraDeServicio, causaMetaRara, estimacionCreible, NIVELES_COMPLETITUD, coberturaMensual, resolverEquipo, investigarMeta, potenciaEquipo, auditarCalidadCargas, detectarPrefijosNuevos, CLASES_NO_FLOTA, cadenciaCargas, consumoDesdeActividadDeclarada, mediana, utilizacion, metaDesdeConsumoReal, parIdentico, huerfanoAporta } from '../data/diagnostico.js';
+import { CATEGORIAS_SEGUIMIENTO, CATEGORIAS_FUERA_DE_OPERACION, contarEstados, altasConDatosPendientes } from '../data/estados-equipo.js';
+import { PATRONES_CONSUMO, PATRON_LABEL, patronesDe, fotoDeConsumo, evaluarRevisiones } from '../data/revision-consumo.js';
+import { cargasImposibles, porEquipo as imposiblesPorEquipo } from '../data/cargas-imposibles.js';
+import { abrirMarcarEquipo, abrirAltaEquipo, abrirCompletarAltas } from './estados.js';
+import { generarDiagnostico, sugerirMeta, evolucionMensual, actividadImplicita, coberturaEquipo, completitudDatos, mesesFueraDeServicio, causaMetaRara, estimacionCreible, NIVELES_COMPLETITUD, coberturaMensual, resolverEquipo, investigarMeta, potenciaEquipo, auditarCalidadCargas, detectarPrefijosNuevos, CLASES_NO_FLOTA, cadenciaCargas, consumoDesdeActividadDeclarada, mediana, utilizacion, metaDesdeConsumoReal, parIdentico, huerfanoAporta } from '../data/diagnostico.js';
 import { TIPO_POR_PREFIJO, MESES, getBandera, tipoLugarCarga, formatFechaAR, normalizeEquipoKey, getDenominacion } from '../data/normalizer.js';
 import { aplicarCorreccionesAutomaticas, deshacerAccionAutomatica, corregirAManoIdentidad } from '../data/autocorreccion.js';
 import { diasHabiles, esDiaHabil, esFeriado } from '../data/feriados.js';
@@ -24,13 +28,6 @@ const view = {
     anio: '', meses: new Set(), editando: null,
     // Recorte por tipo de equipo elegido en la ventana de alcance (ver js/data/alcance.js), o null = toda la flota.
     alcance: null, alcanceQuitado: false, alcancePreguntado: ''
-};
-
-/** Interpretación del ralentí según el tipo de equipo (motor de diagnóstico, ver diagnostico.js). */
-const RALENTI_INFO = {
-    estacionario: { texto: 'es su trabajo', clase: 'ralenti-ok', icono: 'fa-plug-circle-check' },
-    espera: { texto: 'espera operativa', clase: 'ralenti-warn', icono: 'fa-truck-ramp-box' },
-    desperdicio: { texto: 'a revisar', clase: 'ralenti-alert', icono: 'fa-hourglass-half' }
 };
 
 let ultimoAnalisis = null;
@@ -71,20 +68,21 @@ let seguimientoEquiposCache = new Map();
 let actividadEstimadaCache = [];
 // Referentes de meta elegidos a mano por equipo. Ver database.js v14.
 let referentesMetaCache = new Map();
-const CATEGORIAS_SEGUIMIENTO = [
-    { id: 'fuera_servicio', label: 'Fuera de servicio' },
-    { id: 'taller_ext', label: 'Taller externo' },
-    { id: 'taller_int', label: 'Taller interno' },
-    { id: 'temporada_baja', label: 'Temporada baja' },
-    { id: 'sin_chofer', label: 'Sin chofer asignado' },
-    { id: 'backup', label: 'Backup / uso esporádico (ej. grupo electrógeno solo sin energía de red)' },
-    { id: 'otro', label: 'Otro (detallar)' }
-];
+// Consumos altos/bajos/esporadicos marcados para revisar. Ver database.js v15 y revision-consumo.js.
+let revisionesConsumoCache = [];
 const CATEGORIA_SEGUIMIENTO_LABEL = Object.fromEntries(CATEGORIAS_SEGUIMIENTO.map(c => [c.id, c.label]));
 
 /** El 7° parámetro opcional de generarDiagnostico(): siempre las mismas cachés de sesión. */
 function extraDiag() {
-    return { prefijosOficiales: prefijosOficialesCache, prefijosIgnorados: prefijosIgnoradosCache, accionesRecientes: accionesRecientes(), actividadEstimada: actividadEstimadaCache };
+    return {
+        prefijosOficiales: prefijosOficialesCache, prefijosIgnorados: prefijosIgnoradosCache,
+        accionesRecientes: accionesRecientes(), actividadEstimada: actividadEstimadaCache,
+        seguimiento: seguimientoEquiposCache,
+        cargasImposibles: imposiblesPorEquipo(cargasImposibles(ultimoAnalisis?.filas || [])),
+        // Se evaluan aca y no dentro de generarDiagnostico() porque revision-consumo.js importa
+        // de diagnostico.js: calcularlas alla seria un import circular.
+        revisionesEvaluadas: evaluarRevisiones(revisionesConsumoCache, ultimoAnalisis?.filas || [], seguimientoEquiposCache, periodoDeAnalisis(ultimoAnalisis))
+    };
 }
 
 // Equipos marcados para comparar desde las tarjetas (checkbox en cada card + barra flotante),
@@ -158,7 +156,8 @@ const periodosCoinciden = (storedPeriodo, actual) => {
 export function datosParaSeguimiento() {
     if (!ultimoAnalisis) return null;
     const rawRecords = datosCrudos?.rawRecords || [];
-    const hallazgos = generarDiagnostico(ultimoAnalisis.filas, ultimoAnalisis.totales, rawRecords, ralentiEstadosCache, noFlotaAceptadosCache, equiposExcluidosCache, extraDiag());
+    const hallazgos = generarDiagnostico(ultimoAnalisis.filas, ultimoAnalisis.totales, rawRecords, ralentiEstadosCache, noFlotaAceptadosCache, equiposExcluidosCache, extraDiag())
+        .filter(h => !IDS_RALENTI_OCULTOS.has(h.id));
     return { analisis: ultimoAnalisis, rawRecords, hallazgos };
 }
 
@@ -339,8 +338,8 @@ export async function renderPanel() {
     kpiEl.innerHTML = '<p style="color:var(--text-muted)">Analizando datos...</p>';
 
     try {
-        let [equipos, rawRecords, estimados, ralentiEstados, noFlotaAceptados, equiposExcluidos, prefijosOficiales, seguimientoEquipos, actividadEstimada, accionesAutomaticas, referentesMeta] = await Promise.all([
-            getAllEquipos(), getAllRawRecords(), getAllEstimados(), getRalentiEstados(), getNoFlotaAceptados(), getEquiposExcluidos(), getPrefijosNoFlota(), getSeguimientoEquipos(), getActividadEstimada(), getAccionesAutomaticas(), getReferentesMeta()
+        let [equipos, rawRecords, estimados, ralentiEstados, noFlotaAceptados, equiposExcluidos, prefijosOficiales, seguimientoEquipos, actividadEstimada, accionesAutomaticas, referentesMeta, revisionesConsumo] = await Promise.all([
+            getAllEquipos(), getAllRawRecords(), getAllEstimados(), getRalentiEstados(), getNoFlotaAceptados(), getEquiposExcluidos(), getPrefijosNoFlota(), getSeguimientoEquipos(), getActividadEstimada(), getAccionesAutomaticas(), getReferentesMeta(), getRevisionesConsumo()
         ]);
         // Alcance elegido por el usuario: recorta el universo a un tipo de equipo. Se aplica ACÁ, antes de todo lo
         // demás, para que KPIs, diagnóstico y tarjetas hablen del mismo universo. `equiposTodos` queda para
@@ -359,6 +358,7 @@ export async function renderPanel() {
         seguimientoEquiposCache = new Map(seguimientoEquipos.map(s => [s.interno, s]));
         actividadEstimadaCache = actividadEstimada;
         referentesMetaCache = new Map(referentesMeta.map(r => [r.interno, r]));
+        revisionesConsumoCache = revisionesConsumo;
         window.actividadEstimadaCache = actividadEstimada;
         accionesAutomaticasCache = accionesAutomaticas;
 
@@ -983,7 +983,7 @@ function renderKPIs(el, t, fuentes, comparativas = []) {
                     { texto: 'Ver reportes GPS', icono: 'fa-satellite-dish', primaria: true, onClick: () => window.abrirTablaConBusqueda?.('gps', '') },
                     { texto: 'Desglose por equipo', icono: 'fa-magnifying-glass-plus', zoom: () => nivelPorEquipo({ campo: 'total_km', tituloBase: 'Distancia', etiquetaValor: 'los kilómetros totales', formatear: v => `${nf(v)} km`, fuenteTipo: 'gps' }) }
                 ] })}
-            ${kpi({ id: 'kpi-horas', label: 'Horas de uso', valor: `${nf(t.total_horas)} <small>hs</small>`, sub: `${nf(t.horas_movimiento)} movimiento · ${nf(t.horas_ralenti)} ralentí`, titulo: 'Horas de uso', pasos: t.pasos.horas,
+            ${kpi({ id: 'kpi-horas', label: 'Horas de uso', valor: `${nf(t.total_horas)} <small>hs</small>`, sub: 'movimiento + ralentí', titulo: 'Horas de uso', pasos: t.pasos.horas,
                 acciones: [
                     { texto: 'Ver reportes GPS', icono: 'fa-satellite-dish', primaria: true, onClick: () => window.abrirTablaConBusqueda?.('gps', '') },
                     { texto: 'Desglose por equipo', icono: 'fa-magnifying-glass-plus', zoom: () => nivelPorEquipo({ campo: 'total_horas', tituloBase: 'Horas de uso', etiquetaValor: 'las horas totales', formatear: v => `${nf(v, 1)} hs`, fuenteTipo: 'gps' }) }
@@ -1001,15 +1001,55 @@ function renderKPIs(el, t, fuentes, comparativas = []) {
                     { texto: 'Ver maestro de equipos', icono: 'fa-table-list', primaria: true, onClick: () => window.abrirTablaConBusqueda?.('maestro', '') },
                     ...(pendientesDeIdentificar(t).length ? [{ texto: `Ver ${pendientesDeIdentificar(t).length} código${pendientesDeIdentificar(t).length === 1 ? '' : 's'} por identificar`, icono: 'fa-triangle-exclamation', onClick: () => window.abrirTablaConBusqueda?.('carga', (pendientesDeIdentificar(t)[0]?.interno || pendientesDeIdentificar(t)[0]?.dominio || '')) }] : [])
                 ] })}
+            ${kpiEstadosEquipos()}
         </div>`;
+}
+
+/** Tarjeta de equipos fuera de operación (fuera de servicio, San Juan, talleres, vendido) y altas de equipos nuevos. */
+function kpiEstadosEquipos() {
+    const equipos = datosCrudos?.equipos || [];
+    const { total, porCategoria } = contarEstados([...seguimientoEquiposCache.values()]);
+    const pendientes = altasConDatosPendientes(equipos).length;
+    const detalle = CATEGORIAS_FUERA_DE_OPERACION.filter(c => porCategoria[c] > 0)
+        .map(c => `${porCategoria[c]} ${CATEGORIA_SEGUIMIENTO_LABEL[c]}`).join(' · ');
+    const recargar = () => renderPanel();
+    return kpi({
+        id: 'kpi-estados', label: 'Fuera de operación', valor: String(total),
+        sub: (detalle || 'ningún equipo marcado') + (pendientes ? ` · ${pendientes} alta${pendientes === 1 ? '' : 's'} sin datos` : ''),
+        clase: pendientes ? 'kpi-warn' : '', titulo: 'Equipos fuera de operación',
+        pasos: CATEGORIAS_FUERA_DE_OPERACION.map(c => ({ texto: CATEGORIA_SEGUIMIENTO_LABEL[c], calculo: 'equipos con ese estado anotado', resultado: String(porCategoria[c]) })),
+        nota: 'Cada estado descuenta sus días hábiles de la cobertura del equipo, así que un equipo parado no aparece como "poca carga". No lo saca del análisis.',
+        acciones: [
+            { texto: 'Marcar equipo', icono: 'fa-truck-ramp-box', primaria: true, onClick: () => abrirMarcarEquipo({ equipos, seguimiento: seguimientoEquiposCache, onGuardado: async () => { seguimientoEquiposCache = new Map((await getSeguimientoEquipos()).map(s => [s.interno, s])); await recargar(); } }) },
+            { texto: 'Dar de alta un equipo', icono: 'fa-plus', onClick: () => abrirAltaEquipo({ equipos, onGuardado: recargar }) },
+            ...(pendientes ? [{ texto: `Completar datos de ${pendientes} alta${pendientes === 1 ? '' : 's'} automática${pendientes === 1 ? '' : 's'}`, icono: 'fa-clipboard-question', onClick: () => abrirCompletarAltas({ onGuardado: recargar }) }] : [])
+        ]
+    });
 }
 
 // ---------------------------------------------------------------- diagnóstico
 
+// El ralentí ya no se analiza aparte: se entregan las horas totales (movimiento + ralentí). Los
+// hallazgos de ralentí se siguen calculando en diagnostico.js, pero no se muestran en el panel.
+const IDS_RALENTI_OCULTOS = new Set(['ralenti', 'ralenti_inverosimil', 'ralenti_camionetas']);
+
+// Qué patrón de consumo se marca desde cada hallazgo. Es lo que convierte "vi algo raro en el
+// panel de este mes" en una revisión que sobrevive al período y se vuelve a evaluar sola.
+const PATRON_ID_POR_LABEL = Object.fromEntries(PATRONES_CONSUMO.map(p => [p.label, p.id]));
+
+const PATRON_POR_HALLAZGO = {
+    sobreconsumo: 'alto',
+    ahorro: 'bajo',
+    subutilizacion: 'bajo',
+    bajo_uso: 'esporadico',
+    anomalas: 'alto'
+};
+
 function renderDiagnostico(analisis, rawRecords = []) {
     const el = document.getElementById('panel-diagnostico');
     if (!el) return;
-    const hallazgos = generarDiagnostico(analisis.filas, analisis.totales, rawRecords, ralentiEstadosCache, noFlotaAceptadosCache, equiposExcluidosCache, extraDiag());
+    const hallazgos = generarDiagnostico(analisis.filas, analisis.totales, rawRecords, ralentiEstadosCache, noFlotaAceptadosCache, equiposExcluidosCache, extraDiag())
+        .filter(h => !IDS_RALENTI_OCULTOS.has(h.id));
 
     // Qué categorías de hallazgo había la vez anterior y ya no están: es la señal de que un
     // ajuste de metas o un archivo nuevo realmente cambió algo, no solo un texto que dice
@@ -1202,6 +1242,10 @@ function renderDiagnostico(analisis, rawRecords = []) {
                             <button class="btn-xs btn-ver-mes-cargas" data-interno="${esc(e.interno)}" data-anio="${esc(e.anio)}" data-mes="${esc(e.mes)}" title="Ver las cargas de ${esc(e.interno)} en ese mes en la tabla de cargas de combustible">
                                 <i class="fa-solid fa-table-list"></i> Ver cargas de ese mes
                             </button>` : ''}
+                            ${h.id === 'revisiones_consumo' ? `
+                            <button class="btn-xs btn-revision-baja" data-interno="${esc(e.interno)}" data-patron="${esc(PATRON_ID_POR_LABEL[e.denominacion] || '')}" title="Dar de baja esta revisión: sale de la lista">
+                                <i class="fa-solid fa-xmark"></i> Dar de baja
+                            </button>` : ''}
                             ${esAnomala ? `
                             <button class="btn-xs btn-ver-cargas" data-interno="${esc(e.interno)}" title="Ver todas las cargas de este equipo en la tabla, para comparar esta contra las demás">
                                 <i class="fa-solid fa-table-list"></i> Ver y comparar cargas
@@ -1221,6 +1265,14 @@ function renderDiagnostico(analisis, rawRecords = []) {
                             <button class="btn-xs btn-ralenti-reclamo" data-interno="${esc(e.interno)}" data-hallazgo="${esc(h.id)}" title="Investigado: los datos no cierran. Generar un reclamo interno para pedir revisión del equipo GPS">
                                 <i class="fa-solid fa-satellite-dish"></i> Investigar y reclamar GPS
                             </button>` : ''}
+                            ${(() => {
+                                const patron = PATRON_POR_HALLAZGO[h.id];
+                                if (!patron) return '';
+                                const ya = revisionesConsumoCache.some(r => r.interno === e.interno && r.patron === patron);
+                                return `<button class="btn-xs btn-revision-consumo ${ya ? 'active' : ''}" data-interno="${esc(e.interno)}" data-patron="${esc(patron)}" title="${ya ? 'Ya está marcado para revisar: quitarlo de la lista' : `Guardar una foto de este número y del período, para volver a evaluarlo cuando entren datos nuevos y ver si se explica por un estado del equipo (taller, temporada baja) o si es un patrón sostenido`}">
+                                <i class="fa-solid ${ya ? 'fa-clipboard-check' : 'fa-clock-rotate-left'}"></i> ${ya ? 'En revisión' : 'Revisar más adelante'}
+                            </button>`;
+                            })()}
                             <button class="btn-xs btn-estado-equipo" data-interno="${esc(e.interno)}" title="${estadoEq ? 'Editar el estado anotado de este equipo' : 'Anotar el estado del equipo: fuera de servicio, taller, temporada baja, sin chofer, backup...'}">
                                 <i class="fa-solid fa-clipboard-list"></i> ${estadoEq ? 'Editar estado' : 'Estado'}
                             </button>
@@ -1389,6 +1441,37 @@ function renderDiagnostico(analisis, rawRecords = []) {
 
     // Botón "Estado" / "Editar estado" por equipo — abre el modal de estado (fuera de servicio,
     // taller, temporada baja, sin chofer, backup...), respaldado en el store seguimientoEquipos.
+    // Marcar / desmarcar un consumo para revisar más adelante. Guarda la foto del número y del
+    // período: sin el período, cuando se re-evalúe no habría contra qué comparar.
+    el.querySelectorAll('.btn-revision-consumo').forEach(b => {
+        b.addEventListener('click', async (ev) => {
+            ev.stopPropagation();
+            const { interno, patron } = b.dataset;
+            const ya = revisionesConsumoCache.some(r => r.interno === interno && r.patron === patron);
+            if (ya) {
+                await quitarRevisionConsumo(interno, patron);
+            } else {
+                const fila = (analisis.filas || []).find(f => f.equipo.interno === interno);
+                if (!fila) { alert('Ese equipo no está en el análisis actual.'); return; }
+                const nota = (prompt(`Nota para la revisión de ${interno} (${PATRON_LABEL[patron] || patron}). Opcional:`, '') || '').trim();
+                await setRevisionConsumo(fotoDeConsumo(fila, patron, periodoDeAnalisis(analisis), nota));
+            }
+            revisionesConsumoCache = await getRevisionesConsumo();
+            renderDiagnostico(analisis, rawRecords);
+        });
+    });
+
+    el.querySelectorAll('.btn-revision-baja').forEach(b => {
+        b.addEventListener('click', async (ev) => {
+            ev.stopPropagation();
+            const { interno, patron } = b.dataset;
+            if (!patron) return;
+            await quitarRevisionConsumo(interno, patron);
+            revisionesConsumoCache = await getRevisionesConsumo();
+            renderDiagnostico(analisis, rawRecords);
+        });
+    });
+
     el.querySelectorAll('.btn-estado-equipo').forEach(b => {
         b.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -1668,8 +1751,7 @@ function evidenciaReclamo(interno) {
     if (f.equipo.dominio) lin.push(`  Dominio: ${f.equipo.dominio}`);
     if (f.equipo.denominacion) lin.push(`  Tipo: ${f.equipo.denominacion}`);
     if (m.total_horas > 0) {
-        lin.push(`  Horas reportadas por el GPS: ${nf(m.total_horas, 1)} hs (${nf(m.horas_ralenti, 1)} hs en ralenti + ${nf(m.horas_movimiento, 1)} hs en movimiento)`);
-        if (m.horas_ralenti > 0) lin.push(`  Proporcion de ralenti: ${nf((m.horas_ralenti / m.total_horas) * 100)}% del tiempo reportado`);
+        lin.push(`  Horas reportadas por el GPS: ${nf(m.total_horas, 1)} hs (movimiento + ralenti)`);
     }
     if (m.total_km > 0) lin.push(`  Kilometros reportados: ${nf(m.total_km)} km`);
     if (m.cantidad_gps > 0) lin.push(`  Reportes recibidos en el periodo: ${nf(m.cantidad_gps)}`);
@@ -5170,7 +5252,7 @@ function desalineadoInfo(f) {
  * cantidad de reportes GPS pasa a ser un dato secundario y más chico: sigue estando, pero ya
  * no compite en jerarquía visual con la cobertura de cargas.
  */
-function cardPeriodoInfo(f, m, ubi, ralentiTag) {
+function cardPeriodoInfo(f, m, ubi) {
     const fechasC = f.cargas.map(c => c.fecha).filter(Boolean).sort();
     const fechasG = f.gps.map(g => g.fecha).filter(Boolean).sort();
     const mesesC = [...new Set(fechasC.map(x => x.slice(0, 7)))].sort();
@@ -5229,7 +5311,6 @@ function cardPeriodoInfo(f, m, ubi, ralentiTag) {
             ${rango ? `<span class="card-periodo-rango"><i class="fa-solid fa-calendar"></i> ${esc(rango)}</span>` : ''}
             ${m.cantidad_gps > 0 ? `<span title="${esc(tooltipG)}"><i class="fa-solid fa-satellite-dish"></i> ${m.cantidad_gps} GPS</span>` : ''}
             ${desalineado}
-            ${ralentiTag}
         </div>`;
 }
 
@@ -5319,15 +5400,6 @@ function cardHTML(f, maxLitros, precioPromedio = 0, periodo = 'período seleccio
     const sinActividad = factor <= 0 && m.total_litros > 0;
     const implicita = sinActividad ? actividadImplicita(f) : null;
     const est = estadoDe(m, confirmed, implicita);
-
-    // --- Ralentí, interpretado según el tipo de equipo (un GE quieto está trabajando; un TR quieto, no) ---
-    let ralentiTag = '';
-    if (m.horas_ralenti > 0) {
-        const cat = categoriaRalenti(eq.interno);
-        const info = RALENTI_INFO[cat] || RALENTI_INFO.desperdicio;
-        const pct = m.total_horas > 0 ? (m.horas_ralenti / m.total_horas * 100) : 0;
-        ralentiTag = `<span class="ralenti-tag ${info.clase}" title="${nf(pct)}% del tiempo total · ${info.texto}"><i class="fa-solid ${info.icono}"></i> ${nf(m.horas_ralenti)} hs ralentí · ${info.texto}</span>`;
-    }
 
     // --- De dónde salió cada número: se ve de un vistazo, sin tener que abrir el detalle ---
     const fuenteBadges = [];
@@ -5441,7 +5513,7 @@ function cardHTML(f, maxLitros, precioPromedio = 0, periodo = 'período seleccio
         </div>` : (m.consumo_real > 0 ? `<div class="card-meta-hero card-meta-falta"><span class="meta-label"><i class="fa-solid fa-circle-question"></i> Sin meta cargada</span></div>` : '')}
         ${barra}
         ${ubicacionRow}
-        ${cardPeriodoInfo(f, m, ubi, ralentiTag)}
+        ${cardPeriodoInfo(f, m, ubi)}
         ${fuentesRow}
         <div class="litros-bar"><div class="litros-bar-fill" style="width:${pctLitros}%"></div></div>`;
 
@@ -5510,21 +5582,12 @@ function abrirOverlayEquipo(fila, analisis) {
         combustibleLine = `<div class="overlay-line">${ban ? `<span class="combustible-bandera">${esc(ban)}</span>` : ''}<span>${esc(ubi.combustible)}</span></div>`;
     }
 
-    // Ralentí
-    let ralentiTagOverlay = '';
-    if (m.horas_ralenti > 0) {
-        const cat = categoriaRalenti(eq.interno);
-        const info = RALENTI_INFO[cat] || RALENTI_INFO.desperdicio;
-        const pct = m.total_horas > 0 ? (m.horas_ralenti / m.total_horas * 100) : 0;
-        ralentiTagOverlay = `<span class="ralenti-tag ${info.clase}" title="${nf(pct)}% del tiempo total · ${info.texto}"><i class="fa-solid ${info.icono}"></i> ${nf(m.horas_ralenti, 1)} hs ralentí · ${info.texto}</span>`;
-    }
-
     // Cobertura de días hábiles, período, cantidad de reportes GPS y períodos desalineados: se
     // reutiliza EXACTAMENTE la misma función que arma esta línea en la tarjeta chica (antes el
     // overlay tenía su propia versión recortada, que no incluía la cobertura ni el conteo de
     // GPS — al pasar de tarjeta a overlay esa información desaparecía). Usando la misma función
     // en los dos lugares, no se puede volver a perder nada al cambiar de vista.
-    const periodoInfoOverlay = cardPeriodoInfo(fila, m, ubi, ralentiTagOverlay);
+    const periodoInfoOverlay = cardPeriodoInfo(fila, m, ubi);
 
     const html = `
     <div class="equip-overlay" id="equip-overlay">

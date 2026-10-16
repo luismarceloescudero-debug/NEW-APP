@@ -44,7 +44,12 @@ const DB_NAME = 'FlotaControlDB';
 // comparable y la app no: dos equipos del mismo modelo pueden trabajar en frentes distintos y
 // uno arrastra la mediana a un valor que no aplica. Guarda {interno, excluidos[], incluidos[]}
 // para poder sacar un par que la regla eligió, o sumar uno que la regla no vio.
-const DB_VERSION = 14;
+// v15: consumos altos, bajos o esporádicos marcados para revisar más adelante
+// (`revisionesConsumo`). Guarda la FOTO del número y de su base, más el período sobre el que se
+// vio: sin el período, meses después no hay contra qué comparar. Al re-analizar, cada revisión se
+// evalúa sola y dice si el patrón persiste, si se normalizó, o si lo explica un estado anotado
+// del equipo (taller, fuera de servicio, temporada baja) — ver js/data/revision-consumo.js.
+const DB_VERSION = 15;
 
 let dbInstance = null;
 
@@ -142,6 +147,13 @@ export function initDB() {
             // v14 — ver comentario junto a DB_VERSION.
             if (!db.objectStoreNames.contains('referentesMeta')) {
                 db.createObjectStore('referentesMeta', { keyPath: 'interno' });
+            }
+            // v15 — ver comentario junto a DB_VERSION. La clave es interno|patron: el mismo
+            // equipo puede estar marcado por consumo alto Y por esporádico, que son dos
+            // revisiones distintas con su propia foto.
+            if (!db.objectStoreNames.contains('revisionesConsumo')) {
+                const s = db.createObjectStore('revisionesConsumo', { keyPath: 'id' });
+                s.createIndex('interno', 'interno', { unique: false });
             }
         };
     });
@@ -365,9 +377,12 @@ export async function insertRawRecords(arr) {
     //   - la misma fila repetida dentro del mismo archivo;
     //   - volver a subir un archivo ya procesado sin limpiar los movimientos (que es
     //     justamente lo que hay que poder hacer para ir SUMANDO los meses nuevos).
-    // No se borran: se guardan marcadas, siguen visibles en Base de Datos, y el análisis las
-    // saltea (ver registroExcluido() en analyzer.js). Así el dato original no se pierde y la
-    // decisión es reversible.
+    // Acá solo se MARCAN (el análisis las saltea — ver registroExcluido() en analyzer.js). Quien
+    // las descarta de verdad es autocorreccion.js, en el render siguiente: guarda la fila entera
+    // en la acción automática y la borra, así deja de verse en Base de Datos y lo que queda es el
+    // histórico con Deshacer. Marcar primero y borrar después no es un paso de más: el import no
+    // puede decidir solo, porque "idéntico hasta el centavo" se define comparando TODOS los campos
+    // (importe, precio, lugar, chofer, centro de costo) y eso lo hace auditarCalidadCargas().
     const claveExacta = (r) => r.type === 'carga' ? 'C:' + claveCargaExacta(r)
         : r.type === 'gps' ? 'G:' + claveGpsExacta(r)
         : null;
@@ -736,6 +751,20 @@ export function setReferentesMeta(interno, excluidos = [], incluidos = []) {
     });
 }
 
+/**
+ * Consumos marcados para revisar más adelante (ver v15 y js/data/revision-consumo.js). La `foto`
+ * la arma fotoDeConsumo(): el número, su base y el período sobre el que se vio.
+ */
+export function getRevisionesConsumo() { return readAll('revisionesConsumo'); }
+export function setRevisionConsumo(foto) {
+    return writeTx(['revisionesConsumo'], ([store]) => {
+        store.put({ ...foto, id: `${foto.interno}|${foto.patron}` });
+    });
+}
+export function quitarRevisionConsumo(interno, patron) {
+    return writeTx(['revisionesConsumo'], ([store]) => { store.delete(`${interno}|${patron}`); });
+}
+
 export function getRalentiEstados() { return readAll('ralentiEstados'); }
 /** periodo: {desde, hasta} (ISO strings) del análisis activo al momento de guardar. */
 export function setRalentiEstado(interno, estado, motivo = '', periodo = null) {
@@ -783,9 +812,16 @@ export function quitarNoFlotaAceptado(codigo) {
  * { id, tipo: 'alta_interno'|'aceptado_no_flota'|'meta_alineada', codigo, motivo, detalle,
  *   fecha, revisado }
  */
-export function registrarAccionAutomatica({ tipo, codigo, motivo, detalle = '' }) {
+/**
+ * `snapshot` es opcional y solo lo usa la acción que BORRA un registro (dedupe_exacto): sin la
+ * fila guardada, "Deshacer" no tendría de dónde restituirla. El resto de las acciones reasignan
+ * o completan datos, así que les alcanza con `_alias_de` / `_dominio_original` en el registro.
+ */
+export function registrarAccionAutomatica({ tipo, codigo, motivo, detalle = '', snapshot = null }) {
     return writeTx(['accionesAutomaticas'], ([store]) => {
-        store.add({ tipo, codigo, motivo, detalle, fecha: new Date().toISOString(), revisado: false });
+        const rec = { tipo, codigo, motivo, detalle, fecha: new Date().toISOString(), revisado: false };
+        if (snapshot) rec.snapshot = snapshot;
+        store.add(rec);
     });
 }
 export function getAccionesAutomaticas() { return readAll('accionesAutomaticas'); }
@@ -962,7 +998,8 @@ export function clearAllData() {
     return writeTx(
         ['equipos', 'raw_records', 'files_meta', 'estimados', 'precios', 'mapeos', 'config',
          'correccionesCargas', 'disponibilidad', 'edicionesLog', 'ralentiEstados', 'reclamosGPS', 'noFlotaAceptados',
-         'equiposExcluidos', 'prefijosNoFlota', 'seguimientoEquipos', 'actividadEstimada', 'accionesAutomaticas', 'referentesMeta'],
+         'equiposExcluidos', 'prefijosNoFlota', 'seguimientoEquipos', 'actividadEstimada', 'accionesAutomaticas', 'referentesMeta',
+         'revisionesConsumo'],
         (stores) => { stores.forEach(s => s.clear()); }
     );
 }
@@ -978,7 +1015,7 @@ const STORES_PERSISTENTES = [
     'equipos', 'estimados', 'precios', 'mapeos', 'config',
     'correccionesCargas', 'disponibilidad', 'edicionesLog', 'ralentiEstados', 'reclamosGPS',
     'noFlotaAceptados', 'equiposExcluidos', 'prefijosNoFlota', 'seguimientoEquipos',
-    'actividadEstimada', 'accionesAutomaticas', 'referentesMeta'
+    'actividadEstimada', 'accionesAutomaticas', 'referentesMeta', 'revisionesConsumo'
 ];
 const STORES_MOVIMIENTOS = ['raw_records', 'files_meta'];
 export const BACKUP_FORMAT_VERSION = 1;

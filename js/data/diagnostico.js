@@ -11,6 +11,7 @@
 
 import { getPrefijo, clasificarIdentificador, MESES, normalizeEquipoKey, TIPO_POR_PREFIJO, provinciaDeCentroCosto, sugerirPosibleTypo } from './normalizer.js';
 import { diasHabiles, esDiaHabil } from './feriados.js';
+import { cargasPosterioresALaVenta } from './estados-equipo.js';
 import { esServicioPlanta, inferirEstadoPlanta, paresComparables } from './planta.js';
 import { jornadaEsperada, jornadaPonderada, jornadaDelMes, mesesEntre, mesesDeRegistro, registroVacio } from './analyzer.js';
 
@@ -21,7 +22,7 @@ import { jornadaEsperada, jornadaPonderada, jornadaDelMes, mesesEntre, mesesDeRe
 // mostrarse en el panel.
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
-const TOLERANCIA = 0.15;
+export const TOLERANCIA_DESVIO = 0.15;
 const META_ALTA = 2.5;
 const META_BAJA = 0.4;
 export const MIN_CARGAS_CONFIABLE = 3;
@@ -1144,7 +1145,11 @@ export function resolverEquipo(hallazgoId, fila, todas = []) {
  * carga con costo cero baja el total de gasto sin que nadie se entere.
  */
 export function auditarCalidadCargas(rawRecords = []) {
-    const cargas = rawRecords.filter(r => r.type === 'carga');
+    // Las cargas históricas (2024, 2025) quedan afuera de toda esta auditoría: mide la calidad
+    // del período que se está analizando. Si entraran, "cargas sin valorizar" reportaría ~20.000
+    // filas para siempre —esas planillas no traen plata— y "meses con cargas y sin GPS" marcaría
+    // los 24 meses de 2024 y 2025, que nunca van a tener GPS. Son referencia, no datos a corregir.
+    const cargas = rawRecords.filter(r => r.type === 'carga' && !r.solo_historico);
     const gps = rawRecords.filter(r => r.type === 'gps');
     const mesDe = (r) => r.periodo || (r.fecha ? String(r.fecha).slice(0, 7) : null);
     const mesesGps = new Set(gps.map(mesDe).filter(Boolean));
@@ -1649,7 +1654,7 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
 
     // ---------- 1. Sobreconsumo valorizado ----------
     const excedidos = conExceso
-        .filter(x => x.fila.metrics.desvio_pct > TOLERANCIA * 100 && x.exceso.exceso_litros > 0)
+        .filter(x => x.fila.metrics.desvio_pct > TOLERANCIA_DESVIO * 100 && x.exceso.exceso_litros > 0)
         .filter(x => x.fila.metrics.consumo_real / x.fila.confirmed.valor < META_ALTA)
         .sort((a, b) => b.exceso.exceso_costo - a.exceso.exceso_costo);
 
@@ -1683,7 +1688,7 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
 
     // ---------- 2. Ahorro ----------
     const eficientes = conExceso
-        .filter(x => x.fila.metrics.desvio_pct < -TOLERANCIA * 100 && x.exceso.exceso_litros < 0)
+        .filter(x => x.fila.metrics.desvio_pct < -TOLERANCIA_DESVIO * 100 && x.exceso.exceso_litros < 0)
         .filter(x => x.fila.metrics.consumo_real / x.fila.confirmed.valor > META_BAJA)
         .sort((a, b) => a.exceso.exceso_costo - b.exceso.exceso_costo);
 
@@ -1721,7 +1726,7 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
     // (la lista ya se calculó y se repartió arriba, ver REPARTO DE EQUIPOS)
     if (subutilizados.length) {
         const muyBajos = subutilizados.filter(x => x.u.estado === 'muy_baja').length;
-        const conAhorroAparente = subutilizados.filter(x => x.fila.metrics.desvio_pct !== null && x.fila.metrics.desvio_pct < -TOLERANCIA * 100).length;
+        const conAhorroAparente = subutilizados.filter(x => x.fila.metrics.desvio_pct !== null && x.fila.metrics.desvio_pct < -TOLERANCIA_DESVIO * 100).length;
         const ref = subutilizados[0].u;
         hallazgos.push({
             id: 'subutilizacion', severidad: muyBajos ? 'media' : 'baja', icono: 'fa-gauge-simple-low',
@@ -2804,6 +2809,99 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
             equipos: normalizaciones.map(n => ({
                 interno: '✓', denominacion: n.fuente,
                 texto: n.titulo, sub: n.detalle
+            }))
+        });
+    }
+
+    // ---------- Cargas que el equipo no pudo haber hecho ----------
+    // Llegan YA calculadas en `extra` (las arma panel.js con cargasImposibles()): ese modulo
+    // importa mediana() de aca, asi que calcularlas aca seria un import circular. Mismo patron
+    // que las revisiones de consumo.
+    const imposibles = extra.cargasImposibles || [];
+    if (imposibles.length) {
+        const litros = imposibles.reduce((s, x) => s + x.litros, 0);
+        const costo = imposibles.reduce((s, x) => s + x.importe, 0);
+        const dias = imposibles.reduce((s, x) => s + x.dias.length, 0);
+        hallazgos.push({
+            id: 'cargas_imposibles', severidad: 'alta', icono: 'fa-circle-exclamation',
+            internos_todos: imposibles.map(x => x.interno),
+            impacto_costo: costo,
+            titulo: `${imposibles.length} equipo${imposibles.length === 1 ? '' : 's'} con cargas que no pudo haber hecho`,
+            detalle: `En ${dias} día${dias === 1 ? '' : 's'} se le imputaron <strong>${fmt(litros)} L</strong>` +
+                (costo > 0 ? ` y <strong>$${fmt(costo)}</strong>` : '') +
+                ` a equipos que no pueden haberlos cargado: el mismo equipo aparece con más cargas en un solo día que cualquier equipo de la flota, o con varias veces los litros que carga por vez un equipo de su tipo. ` +
+                `Lo más probable es que esas filas sean de <strong>otros equipos</strong> y se hayan imputado a este al cargar la planilla. ` +
+                `<strong>Los litros siguen contando en los totales de la flota</strong> —el combustible se gastó— pero el consumo de estos equipos no sirve hasta resolverlo, y su comparación contra pares tampoco. ` +
+                `No se corrige solo: el equipo real no está en la fila, así que hay que reasignarlas contra el comprobante desde la tabla de cargas.`,
+            equipos: imposibles.slice(0, 12).map(x => ({
+                interno: x.interno, denominacion: x.denominacion,
+                texto: `${x.cargas} cargas · ${fmt(x.litros)} L en ${x.dias.length} día${x.dias.length === 1 ? '' : 's'}`,
+                sub: `${x.dias.join(', ')} · carga más grande ${fmt(x.max_carga, 1)} L` +
+                    (x.lugares.length ? ` · ${esc(x.lugares.join(', '))}` : '')
+            }))
+        });
+    }
+
+    // ---------- Cargas fechadas despues de la venta del equipo ----------
+    // Un equipo vendido sigue sumando a los totales y sigue teniendo tarjeta: lo que gasto
+    // mientras era de la empresa es gasto real y tiene que verse si el periodo lo incluye. Lo
+    // que no puede ser es una carga POSTERIOR a la venta. No se corrige solo: o la fecha de
+    // venta esta mal, o la carga se imputo al equipo equivocado, y son dos arreglos distintos.
+    const postVenta = cargasPosterioresALaVenta(filas, extra.seguimiento || new Map());
+    if (postVenta.length) {
+        const litros = postVenta.reduce((s, x) => s + x.litros, 0);
+        const costo = postVenta.reduce((s, x) => s + x.importe, 0);
+        hallazgos.push({
+            id: 'cargas_post_venta', severidad: 'alta', icono: 'fa-receipt',
+            internos_todos: postVenta.map(x => x.interno),
+            impacto_costo: costo,
+            titulo: `${postVenta.length} equipo${postVenta.length === 1 ? '' : 's'} vendido${postVenta.length === 1 ? '' : 's'} con cargas posteriores a la venta`,
+            detalle: `Suman <strong>${fmt(litros)} L</strong>` + (costo > 0 ? ` y <strong>$${fmt(costo)}</strong>` : '') +
+                ` fechados despues de la fecha de venta anotada. Solo hay dos explicaciones, y las dos necesitan una decision: ` +
+                `o la <strong>fecha de venta esta mal</strong> (se corrige desde "Estado" del equipo), ` +
+                `o esas <strong>cargas se imputaron al equipo equivocado</strong> y hay que reasignarlas en la tabla de cargas. ` +
+                `Las cargas ANTERIORES a la venta no son un problema y se siguen contando: el equipo gasto eso siendo de la empresa.`,
+            equipos: postVenta.slice(0, 12).map(x => ({
+                interno: x.interno, denominacion: x.denominacion,
+                texto: `${x.cargas} carga${x.cargas === 1 ? '' : 's'} · ${fmt(x.litros)} L`,
+                sub: `vendido el ${x.fecha_venta} · cargas del ${x.primera}` + (x.ultima !== x.primera ? ` al ${x.ultima}` : '')
+            }))
+        });
+    }
+
+    // ---------- Consumos marcados para revisar, re-evaluados contra los datos de ahora ----------
+    // Las revisiones llegan YA evaluadas en `extra` (las calcula panel.js con evaluarRevisiones()
+    // de revision-consumo.js). Es a propósito: ese módulo importa de este, así que calcularlas
+    // acá sería un import circular. Acá solo se les da forma de hallazgo.
+    const revisiones = extra.revisionesEvaluadas || [];
+    if (revisiones.length) {
+        const cuenta = (e) => revisiones.filter(r => r.resultado.estado === e).length;
+        const persisten = cuenta('persiste');
+        const explicados = cuenta('explicado');
+        const normalizados = cuenta('normalizado');
+        const ICONO_REV = { persiste: '⚠', explicado: '✓', normalizado: '✓', sin_datos: '—' };
+        const ESTADO_REV = {
+            persiste: 'sigue igual', explicado: 'lo explica un estado anotado',
+            normalizado: 'se normalizó', sin_datos: 'sin cargas para comparar'
+        };
+        hallazgos.push({
+            id: 'revisiones_consumo',
+            severidad: persisten ? 'media' : 'ok',
+            icono: 'fa-clipboard-check', no_comparar: true,
+            internos_todos: revisiones.map(r => r.revision.interno),
+            titulo: `${revisiones.length} consumo${revisiones.length === 1 ? '' : 's'} marcado${revisiones.length === 1 ? '' : 's'} para revisar` +
+                (persisten ? ` · ${persisten} sigue${persisten === 1 ? '' : 'n'} sin explicación` : ' · ninguno quedó sin explicación'),
+            detalle: 'Cada uno se marcó con una <strong>foto del número y del período</strong> en que se vio, y se vuelve a evaluar solo cada vez que entran datos nuevos. ' +
+                'Un consumo raro deja de perderse entre períodos: o se explica, o se normaliza, o queda como patrón sostenido. ' +
+                (persisten ? `<strong>${persisten} sigue${persisten === 1 ? '' : 'n'} presentando el mismo patrón con más datos</strong>: ahí ya no es un dato puntual. ` : '') +
+                (explicados ? `${explicados} tiene${explicados === 1 ? '' : 'n'} un estado anotado que se solapa con el período revisado (taller, fuera de servicio, temporada baja): el número tiene contexto, aunque eso no prueba que sea la causa. ` : '') +
+                (normalizados ? `${normalizados} ya no presenta${normalizados === 1 ? '' : 'n'} el patrón y se puede${normalizados === 1 ? '' : 'n'} dar de baja. ` : ''),
+            equipos: revisiones.slice(0, 15).map(({ revision, resultado, patronLabel }) => ({
+                interno: revision.interno,
+                denominacion: patronLabel || revision.patron,
+                texto: `${ICONO_REV[resultado.estado] || ''} ${ESTADO_REV[resultado.estado] || resultado.estado}`,
+                sub: `${resultado.detalle ? resultado.detalle + ' · ' : ''}marcado el ${String(revision.fecha || '').slice(0, 10)}` +
+                    (revision.nota ? ` · ${revision.nota}` : '')
             }))
         });
     }

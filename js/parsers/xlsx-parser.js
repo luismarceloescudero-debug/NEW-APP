@@ -17,7 +17,7 @@ import {
     upsertEquipos, insertRawRecords, insertEstimados, insertPrecios, registrarArchivo, getMapeo,
     insertEntregasLoop, saveMapeoFirma, getAllRawRecords
 } from '../data/database.js';
-import { ESQUEMAS, puntuarEsquemas, firmaEncabezados, detectarFormatoColumna } from './esquemas.js';
+import { ESQUEMAS, puntuarEsquemas, firmaEncabezados, detectarFormatoColumna, PLANTA_HISTORICA } from './esquemas.js';
 import {
     parseDate, parseNumber, normalizeString, normalizeEquipoKey, aggregateHours, parseExcelHours,
     getDenominacion, parseConsumoEstimado, extraerIdentidad, partesFecha, slugCampo, parseHoraDeFecha,
@@ -48,7 +48,7 @@ function filaEncabezadoFallback(rawRows) {
 
 // Tipos que tienen un importador propio (con su cálculo). Todo lo demás es "otra planilla"
 // y entra por el importador genérico.
-const TIPOS_CON_IMPORTADOR = new Set(['EQUIPOS', 'ESTIMADOS', 'CARGAS', 'GPS', 'GPS_RESUMEN_VIAJE', 'ENTREGAS_LOOP']);
+const TIPOS_CON_IMPORTADOR = new Set(['EQUIPOS', 'ESTIMADOS', 'CARGAS', 'CARGAS_HISTORICAS', 'GPS', 'GPS_RESUMEN_VIAJE', 'ENTREGAS_LOOP']);
 
 /**
  * Fase 7 — mira el archivo SIN guardar nada y dice qué entendió:
@@ -154,13 +154,39 @@ export async function parseXLSX(file, decision = null) {
     });
 }
 
+/**
+ * La hoja que define de qué tipo es el archivo.
+ *
+ * Normalmente es la primera, y se devuelve esa. Pero un archivo puede abrir con una hoja que no
+ * son datos: el histórico de cargas 2025 arranca con una hoja "CONFIG" (una tabla de
+ * equivalencias interno → sector) y las cargas están en las tres hojas siguientes, una por sede.
+ * Mirando solo la primera, ese archivo caía al importador genérico e importaba 100 filas de
+ * lookup en vez de 10.558 cargas — sin ningún error.
+ *
+ * Así que si la primera hoja no da un tipo conocido, se sigue buscando en las demás. El orden
+ * importa: la primera hoja que da un tipo conocido gana, y las demás se leen después solo si
+ * ese tipo reparte sus datos en varias hojas.
+ */
+function elegirHojaPrincipal(workbook, filename) {
+    let fallback = null;
+    for (const nombre of workbook.SheetNames) {
+        const rows = XLSX.utils.sheet_to_json(workbook.Sheets[nombre], { header: 1, defval: '' });
+        if (!rows.length) continue;
+        const det = detectarFormato(rows, filename);
+        if (!fallback) fallback = { nombre, rows, det };
+        if (!det.generico && det.headerRowIdx !== -1 && det.tipo !== 'UNKNOWN') return { nombre, rows, det };
+    }
+    return fallback;
+}
+
 async function procesarLibro(data, filename, decision = null) {
     const workbook = XLSX.read(data, { type: 'array' });
-    const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-    const rawRows = XLSX.utils.sheet_to_json(firstSheet, { header: 1, defval: '' });
-    if (!rawRows.length) throw new Error('El archivo está vacío');
+    const principal = elegirHojaPrincipal(workbook, filename);
+    if (!principal) throw new Error('El archivo está vacío');
+    const hojaPrincipal = principal.nombre;
+    const rawRows = principal.rows;
 
-    const det = detectarFormato(rawRows, filename);
+    const det = principal.det;
 
     // Fase 7: sin decisión explícita, un formato que no es conocido pero ya se confirmó antes
     // (misma firma de encabezados) se importa con el mapeo recordado.
@@ -224,13 +250,22 @@ async function procesarLibro(data, filename, decision = null) {
     // resultaron ser subconjuntos exactos de Hormigón (0 remitos nuevos, todo el volumen ya
     // estaba en la primera hoja): se siguen leyendo las tres por seguridad ante un futuro
     // export de Loop que sí traiga algo distinto en esas hojas — no porque hoy aporten datos.
-    if (det.tipo === 'ENTREGAS_LOOP' && det.formatoEntregas === 'detalle' && workbook.SheetNames.length > 1) {
-        filas.forEach(f => { f.__hoja = workbook.SheetNames[0]; });
-        for (const nombreHoja of workbook.SheetNames.slice(1)) {
+    // Dos formatos reparten el mismo tipo de dato en varias hojas y hay que leerlas todas:
+    //   - "Informe Entregas Loop" (Hormigón / Bombeado / Otros).
+    //   - Las cargas históricas del 2025, una hoja por sede (GODOY CRUZ / SAN MARTIN / TUNUYAN),
+    //     más una hoja CONFIG que NO son cargas y que se descarta sola porque no tiene la forma.
+    // El resto de los formatos se queda con la primera hoja nada más: leer todas a ciegas
+    // arriesgaría, por ejemplo, sumar dos veces una fila que Excel repite en dos pestañas de un
+    // archivo que no se diseñó para este cruce.
+    const LEE_TODAS_LAS_HOJAS = (det.tipo === 'ENTREGAS_LOOP' && det.formatoEntregas === 'detalle') || det.tipo === 'CARGAS_HISTORICAS';
+    if (LEE_TODAS_LAS_HOJAS && workbook.SheetNames.length > 1) {
+        filas.forEach(f => { f.__hoja = hojaPrincipal; });
+        for (const nombreHoja of workbook.SheetNames) {
+            if (nombreHoja === hojaPrincipal) continue;
             const rowsHoja = XLSX.utils.sheet_to_json(workbook.Sheets[nombreHoja], { header: 1, defval: '' });
             if (!rowsHoja.length) continue;
             const detHoja = detectarFormato(rowsHoja, filename);
-            if (detHoja.headerRowIdx === -1 || detHoja.tipo !== 'ENTREGAS_LOOP') continue; // hoja vacía o con otra forma
+            if (detHoja.headerRowIdx === -1 || detHoja.tipo !== det.tipo) continue; // hoja vacía o con otra forma (ej. CONFIG)
             const headersHoja = extraerHeaders(rowsHoja[detHoja.headerRowIdx]);
             const filasHoja = filasComoObjetos(rowsHoja, detHoja.headerRowIdx, headersHoja);
             filasHoja.forEach(f => { f.__hoja = nombreHoja; });
@@ -248,6 +283,7 @@ async function procesarLibro(data, filename, decision = null) {
     else if (det.tipo === 'CARGAS') { n = await handleCargas(filas, filename, mapeo); await handlePrecios(workbook, filename); }
     else if (det.tipo === 'GPS') n = await handleGPS(filas, filename, det.desde, det.hasta, mapeo);
     else if (det.tipo === 'GPS_RESUMEN_VIAJE') n = await handleGPSResumenViaje(rawRows, det.desde, det.hasta, det.unidad, filename);
+    else if (det.tipo === 'CARGAS_HISTORICAS') n = await handleCargasHistoricas(filas, filename, mapeo);
     else if (det.tipo === 'ENTREGAS_LOOP') n = await handleEntregasLoop(filas, filename, det.formatoEntregas, mapeo);
     else n = await handleGenerico(filas, filename, det, mapeo);
 
@@ -293,6 +329,13 @@ function detectarFormato(rawRows, filename) {
         if (out.headerRowIdx === -1) {
             if (t.includes('CONSUMO ESTIMADO')) { out.tipo = 'ESTIMADOS'; out.etiqueta = 'Consumos Estimados'; out.headerRowIdx = i; }
             else if (t.includes('LITROS') && t.includes('LUGAR DE CARGA')) { out.tipo = 'CARGAS'; out.etiqueta = 'Cargas de Combustible'; out.headerRowIdx = i; }
+            // Combustible de años anteriores (2024, 2025): mismo dato, formato viejo. Lo que lo
+            // distingue del corriente es cómo se llama la columna del lugar — "PLANTA DE CARGA"
+            // / "PLANTA DE CERGA" / "Pta Carga" contra "LUGAR DE CARGA" — y esa diferencia es
+            // justamente la que hay que respetar: estas planillas no traen precio ni importe y no
+            // tienen GPS de su año, así que entran marcadas como histórico y no al período
+            // corriente. Ver CARGAS_HISTORICAS en esquemas.js.
+            else if (t.includes('LITROS') && PLANTA_HISTORICA.some(p => t.includes(normalizeString(p)))) { out.tipo = 'CARGAS_HISTORICAS'; out.etiqueta = 'Cargas de Combustible (histórico)'; out.headerRowIdx = i; }
             else if (t.includes('TIPO') && t.includes('MARCA') && t.includes('POTENCIA') && t.includes('INTERNO')) { out.tipo = 'EQUIPOS'; out.etiqueta = 'Equipos'; out.headerRowIdx = i; }
             else if (t.includes('KILOMETROS RECORRIDOS') || t.includes('TIEMPO EN MOVIMIENTO')) { out.tipo = 'GPS'; out.etiqueta = 'Resumen de Flota (GPS)'; out.headerRowIdx = i; }
             // Entregas de Loop (logística): dos exportaciones del mismo sistema, cruzadas por
@@ -634,6 +677,48 @@ async function handleCargas(filas, filename, mapeo) {
             sector: normalizeString(val(row, 'sector', ['SECTOR'], mapeo)) || '',
             centro_costo: normalizeString(val(row, 'centro_costo', ['CENTRO DE COSTO', 'C. COSTO'], mapeo)) || '',
             lugar_carga
+        });
+    });
+    if (recs.length) await insertRawRecords(recs);
+    return recs.length;
+}
+
+/**
+ * Cargas de combustible de años anteriores (2024, 2025). Ver CARGAS_HISTORICAS en esquemas.js.
+ *
+ * Se guardan como `type: 'carga'` porque eso es lo que son, con `solo_historico: true` para que
+ * queden FUERA del cálculo corriente — el mismo mecanismo que usa `solo_comparativa` con los
+ * Resumen de viaje. Así se pueden consultar y comparar entre años sin estirar el período
+ * analizado ni meter filas sin importe en el KPI de costo.
+ *
+ * No se les busca precio ni importe a propósito: estas planillas no los traen, y dejar los
+ * campos ausentes es más honesto que grabar ceros que después parecen un dato.
+ */
+async function handleCargasHistoricas(filas, filename, mapeo) {
+    const recs = [];
+    filas.forEach(row => {
+        const id = identidadDeFila(row, mapeo);
+        if (!id.interno && !id.dominio) return;
+
+        const fechaVal = val(row, 'fecha', ['FECHA'], mapeo);
+        const fecha = parseDate(fechaVal);
+        const litros = parseNumber(val(row, 'litros', ['LITROS'], mapeo));
+        if (!fecha || !(litros > 0)) return;
+
+        recs.push({
+            ...baseMovimiento(row, id, fecha, filename),
+            type: 'carga',
+            type_label: 'Cargas de Combustible (histórico)',
+            // La marca que lo mantiene fuera de todo cálculo del período corriente.
+            solo_historico: true,
+            hoja: row.__hoja || '',
+            hora: parseHoraDeFecha(fechaVal),
+            litros,
+            lugar_carga: normalizeString(val(row, 'lugar', PLANTA_HISTORICA, mapeo)) || '',
+            chofer: normalizeString(val(row, 'chofer', ['CHOFER'], mapeo)) || '',
+            sector: normalizeString(val(row, 'sector', ['SECTOR'], mapeo)) || '',
+            observacion: normalizeString(val(row, 'observacion', ['OBSERVACION'], mapeo)) || '',
+            centro_costo: normalizeString(val(row, 'centro_costo', ['CENTRO DE COSTO', 'C. COSTO'], mapeo)) || ''
         });
     });
     if (recs.length) await insertRawRecords(recs);

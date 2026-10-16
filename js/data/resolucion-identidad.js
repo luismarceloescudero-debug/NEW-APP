@@ -26,25 +26,54 @@ export const SERVICIO_POR_SEDE = {
 /** Mayoría clara: la patente más frecuente tiene que duplicar a la siguiente. */
 const RAZON_MAYORIA = 2;
 
+/**
+ * Los datos que acompañan a cada carga y sirven de pista para saber a qué equipo pertenece un
+ * código mal escrito. El orden es el que se usa al redactar la evidencia.
+ *
+ * `fuerte` es la diferencia que importa, y es la razón por la que sumar campos no afloja la
+ * regla. Lugar de carga, centro de costo y chofer **distinguen**: son de unos pocos equipos
+ * cada uno, así que compartirlos con el candidato es información. El tipo de combustible no:
+ * casi toda la flota carga el mismo, así que coincidir en eso no dice nada sobre la identidad
+ * del equipo — si contara por sí solo, cualquier código a una letra de otro se "corregiría"
+ * solo y los litros se moverían de equipo sin que nadie lo note. Entra igual, porque cuando ya
+ * hay una pista fuerte suma confianza y queda escrito en la evidencia, pero nunca alcanza solo.
+ */
+const CAMPOS_PISTA = [
+    { campo: 'lugar_carga', etiqueta: 'mismo lugar de carga', fuerte: true },
+    { campo: 'centro_costo', etiqueta: 'mismo centro de costo', fuerte: true },
+    { campo: 'chofer', etiqueta: 'mismo chofer', fuerte: true },
+    { campo: 'combustible', etiqueta: 'mismo tipo de combustible', fuerte: false }
+];
+
 const conjunto = (cargas, campo) => new Set(cargas.map(c => normalizeString(c[campo])).filter(Boolean));
 const compartido = (a, b) => [...a].filter(x => b.has(x));
 
 /**
  * Caso 1. `cargasDelCodigo` son las del código dudoso; `cargasTodas` las de toda la planilla
- * (para conocer dónde carga el equipo candidato). Devuelve { destino, evidencia } o null.
+ * (para conocer con qué datos viene el equipo candidato).
+ * Devuelve { destino, evidencia, pistas } o null.
+ *
+ * La condición de fondo no cambió —estar a una letra NO alcanza— pero ahora se miran los cuatro
+ * datos que acompañan a la carga en vez de dos, y hace falta al menos una pista FUERTE.
  */
 export function proponerTipeo(codigo, cargasDelCodigo, cargasTodas, equipos) {
     const destino = sugerirPosibleTypo(codigo, equipos.map(e => e.interno).filter(Boolean));
     if (!destino) return null;
     const claveDestino = normalizeEquipoKey(destino);
     const delDestino = cargasTodas.filter(c => c.interno_key === claveDestino);
-    const lugares = compartido(conjunto(cargasDelCodigo, 'lugar_carga'), conjunto(delDestino, 'lugar_carga'));
-    const centros = compartido(conjunto(cargasDelCodigo, 'centro_costo'), conjunto(delDestino, 'centro_costo'));
-    if (!lugares.length && !centros.length) return null;
+    if (!delDestino.length) return null;
+
     const pistas = [];
-    if (lugares.length) pistas.push(`mismo lugar de carga (${lugares.join(', ')})`);
-    if (centros.length) pistas.push(`mismo centro de costo (${centros.join(', ')})`);
-    return { destino, evidencia: `a una letra de ${destino}, ${pistas.join(' y ')}` };
+    for (const { campo, etiqueta, fuerte } of CAMPOS_PISTA) {
+        const comunes = compartido(conjunto(cargasDelCodigo, campo), conjunto(delDestino, campo));
+        if (comunes.length) pistas.push({ campo, fuerte, texto: `${etiqueta} (${comunes.join(', ')})` });
+    }
+    if (!pistas.some(p => p.fuerte)) return null;
+    return {
+        destino,
+        pistas: pistas.map(p => p.campo),
+        evidencia: `a una letra de ${destino}, ${pistas.map(p => p.texto).join(' y ')}`
+    };
 }
 
 /** Caso 2. Código de una fila puntual según su lugar de carga, o null si no es un servicio o no hay sede. */

@@ -12,6 +12,8 @@ Este mapa **no repite** el por qué de cada cosa. Eso vive en:
 - [`README.md`](../README.md): qué es la app, uso, cómo se decide L/hora vs L/100km.
 - [`docs/FASE-7-IMPORTACION.md`](FASE-7-IMPORTACION.md), [`docs/DEPLOYMENT.md`](DEPLOYMENT.md) y
   las demás `docs/FASE-*.md`: el detalle de cada fase.
+- [`docs/CONSUMOS-DE-FABRICA.md`](CONSUMOS-DE-FABRICA.md): consumos de fábrica con fuente, por
+  categoría, para la primera meta de cada equipo.
 - `.claude/skills/`: las reglas que una sesión tiene que cargar antes de tocar cálculos
   (`calculos-combustible`, `flotacontrol-reglas-negocio`), importación
   (`flotacontrol-importacion`), vistas (`flotacontrol-nueva-vista`) o gráficos
@@ -31,20 +33,18 @@ flowchart TD
         XL[/"Planillas .xlsx / .csv<br/>Equipos · Cargas · Resumen de Flota (GPS)<br/>Consumos Estimados · Resumen de viaje · Loop"/]
         XL --> INS["inspeccionarArchivo()<br/>xlsx-parser.js:63"]
         INS -- "puntuarEsquemas()<br/>esquemas.js:133" --> EST{"estado"}
-        EST -- "revisar" --> MAP["abrirVistaPrevia()<br/>ui/mapeo.js:32<br/>(Revisar columnas)"]
-        EST -- "reconocido / recordado" --> DISP
-        MAP -- "decision" --> DISP["dispatchFileParser()<br/>parsers/index.js:11"]
+        EST -- "solo ordena la cola:<br/>reconocidos, recordados, a revisar" --> DISP["dispatchFileParser()<br/>parsers/index.js:11"]
         DISP --> PX["parseXLSX → procesarLibro()<br/>xlsx-parser.js:144 / :157"]
         PX --> DET["detectarFormato()<br/>xlsx-parser.js:270"]
         DET --> HND["handleEquipos · handleEstimados · handleCargas+handlePrecios<br/>handleGPS · handleGPSResumenViaje · handleEntregasLoop<br/>xlsx-parser.js:246-251"]
         HND -. "normalizeEquipoKey, parseExcelHours,<br/>corregirCodigoConocido, importeDeCarga" .-> NORM["data/normalizer.js"]
     end
 
-    subgraph DB["IndexedDB FlotaControlDB (data/database.js, DB_VERSION 14 en :47)"]
+    subgraph DB["IndexedDB FlotaControlDB (data/database.js, DB_VERSION 15 en :52)"]
         EQ[("equipos<br/>maestro, se fusiona")]
         RR[("raw_records<br/>movimientos: cargas, GPS, Loop…")]
         ES[("estimados · precios · files_meta · mapeos")]
-        CORR[("correcciones y decisiones del usuario<br/>correccionesCargas, seguimientoEquipos,<br/>accionesAutomaticas, config, …")]
+        CORR[("correcciones y decisiones del usuario<br/>correccionesCargas, seguimientoEquipos,<br/>accionesAutomaticas, revisionesConsumo, config, …")]
     end
 
     HND -- "upsertEquipos()" --> EQ
@@ -60,6 +60,7 @@ flowchart TD
         AUTO -- "sin cambios" --> OUT
         AF2 --> OUT["ultimoAnalisis = { filas, totales, comparativas }<br/>window.ultimoAnalisis (panel.js:421)"]
         OUT --> DIAG["generarDiagnostico()<br/>data/diagnostico.js:1465 → hallazgos"]
+        OUT --> EXTRA["cargasImposibles() · evaluarRevisiones() · contarEstados()<br/>se evalúan en panel.js, fuera de generarDiagnostico()<br/>(revision-consumo.js importa de diagnostico.js)"]
     end
 
     EQ --> LEE
@@ -80,6 +81,7 @@ flowchart TD
     OUT --> PANEL
     OUT --> GEN
     DIAG --> PANEL
+    EXTRA --> PANEL
     OUT -- "datosParaSeguimiento()<br/>panel.js:158" --> SEG
     RR --> DATOS
     EQ --> DATOS
@@ -97,9 +99,10 @@ Puntos que no se ven leyendo un solo archivo:
 - **La autocorrección corre dentro del render**, entre dos pasadas de `analizarFlota()`: primero
   se analiza para encontrar huérfanos, se corrige lo que no tiene ambigüedad y, si algo cambió,
   se vuelve a analizar con la base ya corregida (`panel.js:390-416`).
-- **Orden de procesamiento de archivos** (`upload.js:229`): primero los formatos reconocidos,
-  después los recordados (mapeo guardado en `mapeos` por firma de encabezados), al final los que
-  piden revisión. Así la planilla global de cargas ya está guardada cuando se mide la
+- **Orden de procesamiento de archivos** (`upload.js:222`): `inspeccionarArchivo()` ya no abre
+  ninguna vista previa (la de "Revisar columnas", `js/ui/mapeo.js`, se borró el 05/10/2026);
+  solo ordena la cola: primero los formatos reconocidos, después los recordados (mapeo guardado
+  en `mapeos` por firma de encabezados), al final los que no coinciden. Así la planilla global de cargas ya está guardada cuando se mide la
   superposición de un reporte de estación (`superposicionConCargas()`, `xlsx-parser.js:108`).
 - **"Reemplazar los movimientos ya cargados"** viene tildada: al procesar, `upload.js:208` llama
   a `clearMovimientos()` antes de importar. El maestro (`equipos`) y las decisiones no se borran.
@@ -124,7 +127,7 @@ Puntos que no se ven leyendo un solo archivo:
 | `manifest.webmanifest`, `icons/` | Instalación como PWA (`tools/generar-iconos.cjs`). |
 | `xlsx.full.min.js`, `vendor/` | SheetJS y Font Awesome locales. Ningún CDN externo. |
 
-### Importación (`js/parsers/` + `js/ui/upload.js` + `js/ui/mapeo.js`)
+### Importación (`js/parsers/` + `js/ui/upload.js`)
 
 | Archivo | Dueño de |
 |---|---|
@@ -132,13 +135,12 @@ Puntos que no se ven leyendo un solo archivo:
 | `js/parsers/xlsx-parser.js` | Lectura con SheetJS, detección de tipo (`detectarFormato :270`), un `handle*` por tipo (`:452-799`), identidad de fila con correcciones confirmadas (`:411-430`), importe recompuesto (`importeDeCarga :579`). Es el que escribe en IndexedDB. |
 | `js/parsers/index.js` | Despacho por extensión (`dispatchFileParser`). |
 | `js/ui/upload.js` | Pantalla Carga de Datos: cola de archivos, orden de procesamiento, casilla "Reemplazar", estado de la base (`renderDBStatus :153`). |
-| `js/ui/mapeo.js` | Vista previa "Revisar columnas antes de importar" y decisión ante superposición. |
 
 ### Modelo de datos
 
 | Archivo | Dueño de |
 |---|---|
-| `js/data/database.js` | **Único** acceso a IndexedDB: los 19 stores y su `DB_VERSION` (`:47`, solo sube y solo agrega stores), fusión del maestro (`upsertEquipos :224`, respeta `editado_manual`), dedupe exacto (`insertRawRecords :359`), fusión de Loop por remito (`insertEntregasLoop :484`), huella estable de cargas (`huellaCarga :165`), backup (`exportarBackup :991` / `importarBackup :1040`). |
+| `js/data/database.js` | **Único** acceso a IndexedDB: los 20 stores y su `DB_VERSION` (`:52`, solo sube y solo agrega stores), fusión del maestro (`upsertEquipos :224`, respeta `editado_manual`), dedupe exacto (`insertRawRecords :359`), fusión de Loop por remito (`insertEntregasLoop :484`), huella estable de cargas (`huellaCarga :165`), backup (`exportarBackup :991` / `importarBackup :1040`). |
 | `js/data/normalizer.js` | Identidad y parseo: `normalizeEquipoKey` (`:289`, única fuente de verdad de la clave), `getDenominacion` (`:166`), `TIPO_POR_PREFIJO` (`:14`), `corregirCodigoConocido` (`:359`), `parseExcelHours` (`:689`), centros de costo y provincias. |
 
 ### Cálculo y reglas de negocio
@@ -149,6 +151,9 @@ Puntos que no se ven leyendo un solo archivo:
 | `js/data/diagnostico.js` | El motor de hallazgos (`generarDiagnostico :1465`) y las definiciones únicas que se importan, nunca se reescriben: `mediana :67`, `confiabilidad :251`, `utilizacion :303`, `coberturaEquipo :388`, `calcularExceso :449`, `sugerirMeta :499`. `detalle:` se renderiza como HTML: escapar con su `esc()`. |
 | `js/data/autocorreccion.js` | Aplicar sin preguntar lo que no tiene ambigüedad (`:52`), Deshacer (`:283`) y Corregir a mano (`:343`). |
 | `js/data/resolucion-identidad.js` | Decisiones puras de identidad: tipeo con evidencia (`:36`), servicio por sede (`:51`), patente ganadora (`:63`). |
+| `js/data/estados-equipo.js` | Estados fuera de operación (`CATEGORIAS_SEGUIMIENTO`, `CATEGORIAS_FUERA_DE_OPERACION`, `contarEstados :28`), fecha de venta y cargas posteriores a la venta (`:50`, `:69`), alta de equipos nuevos y sus datos faltantes (`validarAlta :118`, `altasConDatosPendientes :107`). |
+| `js/data/revision-consumo.js` | Consumos altos, bajos o esporádicos marcados para revisar: patrones (`patronesDe :43`), foto al marcar (`fotoDeConsumo :60`) y cómo siguió cada uno (`evaluarRevisiones :160`). Store `revisionesConsumo` (DB v15). |
+| `js/data/cargas-imposibles.js` | Cargas que un equipo no pudo haber hecho, solo con equipo, litros y fecha (`cargasImposibles :123`, `porEquipo :185`). Los umbrales están medidos sobre datos reales: ver `CLAUDE.md`. |
 | `js/data/planta.js` | Servicios de planta (CA, CL, LM, MT): estado asumido en meses sin cargas (`:37`) y pares comparables (`:68`). |
 | `js/data/alcance.js` | Recorte cuando lo subido cubre un solo tipo de equipo (`detectarAlcanceParcial :44`, `filtrarPorAlcance :72`). |
 | `js/data/feriados.js` | Calendario: días hábiles (`:108`), último día hábil del mes (`:97`), feriados. Fechas con `isoLocal()`, nunca `toISOString()`. |
@@ -157,10 +162,11 @@ Puntos que no se ven leyendo un solo archivo:
 
 | Archivo | Dueño de |
 |---|---|
-| `js/ui/panel.js` (~5.800 líneas) | El Panel: `renderPanel()` (`:334`) orquesta lectura, análisis, autocorrección y dibujo; KPIs, diagnóstico, tarjetas, filtros, modal "Revisar y decidir", chip de alcance. |
+| `js/ui/panel.js` (~5.870 líneas) | El Panel: `renderPanel()` (`:334`) orquesta lectura, análisis, autocorrección y dibujo; KPIs, diagnóstico, tarjetas, filtros, modal "Revisar y decidir", chip de alcance. |
 | `js/ui/panel-generico.js` | Panel cuando la planilla principal no es la de cargas. |
 | `js/ui/seguimiento.js` | Vista Seguimiento (reusa lo ya calculado por `datosParaSeguimiento()`). |
 | `js/ui/datatable.js` (~2.200) | Base de Datos: visor/editor de tablas crudas, búsqueda, exportar. |
+| `js/ui/estados.js` | Modales de estados: marcar un equipo fuera de operación (`abrirMarcarEquipo :40`), alta de equipo nuevo (`abrirAltaEquipo :103`) y completar altas pendientes. La tarjeta `kpi-estados` vive en panel.js. |
 | `js/ui/modals.js` | Detalle por equipo (desglose del cálculo, cargas, GPS). |
 | `js/ui/metas.js`, `comparativa.js`, `calcpopover.js` | Ajuste de metas, comparativa entre equipos, popover "¿de dónde sale este número?". |
 | `js/ui/config.js`, `backup.js`, `aviso.js` | Configuración, backup/restauración, aviso de datos locales. |
@@ -171,7 +177,7 @@ Puntos que no se ven leyendo un solo archivo:
 | Archivo | Dueño de |
 |---|---|
 | `styles/main.css` | Variables, layout general, navegación. |
-| `styles/components.css` | Botones, badges, modales, vista previa de mapeo y piezas compartidas. |
+| `styles/components.css` | Botones, badges, modales y piezas compartidas. |
 | `styles/panel.css` | Todo el Panel (KPIs, tarjetas, `.diag-lista`, hallazgos). |
 | `styles/upload.css` | Pantalla Carga de Datos (zona de arrastre, cola de archivos). |
 
@@ -263,13 +269,7 @@ Cargar antes la skill `flotacontrol-importacion`.
 Todavía no hay librería de gráficos. Antes de nada, la skill `flotacontrol-graficos`: hay que
 vendorizar Chart.js **y** su dependencia `@kurkle/color`.
 
-## 4. Pendiente al escribir este mapa
-
-La carpeta principal del repo (`flotacontrol-repo-limpio`, fuera de este worktree) tenía el
-16/10/2026 unos 30 cambios sin commitear del dueño. Este mapa describe **`origin/main`**; si
-esos cambios mueven el flujo, este archivo se actualiza cuando se commiteen.
-
-## 5. Regla
+## 4. Regla
 
 **Este mapa se actualiza en el mismo PR que cambie el flujo**: un tipo de planilla nuevo, un
 store de IndexedDB, un paso nuevo en `renderPanel()`, una vista, un módulo nuevo en `js/` o una
